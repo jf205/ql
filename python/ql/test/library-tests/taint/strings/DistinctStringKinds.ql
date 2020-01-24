@@ -32,8 +32,6 @@ class ExternalStringSource extends TaintSource {
     }
 
 }
-
 from TaintedNode n
-where n.getLocation().getFile().getName().matches("%test.py")
-select n.getTrackedValue(), n.getLocation().toString(), n.getNode().getNode(), n.getContext()
-
+where n.getLocation().getFile().getShortName() = "test.py"
+select "Taint " + n.getTaintKind(), n.getLocation().toString(), n.getAstNode(), n.getContext()

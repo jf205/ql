@@ -40,12 +40,6 @@ import * as ast_extractor from "./ast_extractor";
 import { Project } from "./common";
 import { TypeTable } from "./type_table";
 
-// Modify the TypeScript `System` object to ensure BOMs are being
-// stripped off.
-ts.sys.readFile = (path: string, encoding?: string) => {
-    return getSourceCode(path);
-};
-
 interface ParseCommand {
     command: "parse";
     filename: string;
@@ -132,7 +126,7 @@ function checkCycle(root: any) {
 function isBlacklistedProperty(k: string) {
     return k === "parent" || k === "pos" || k === "end"
         || k === "symbol" || k === "localSymbol"
-        || k === "flowNode" || k === "returnFlowNode"
+        || k === "flowNode" || k === "returnFlowNode" || k === "endFlowNode" || k === "fallthroughFlowNode"
         || k === "nextContainer" || k === "locals"
         || k === "bindDiagnostics" || k === "bindSuggestionDiagnostics";
 }
@@ -147,22 +141,6 @@ function stringifyAST(obj: any) {
         }
         return v;
     });
-}
-
-/**
- * Reads the contents of a file as UTF8 and strips off a leading BOM.
- *
- * This must match how the source is read in the Java part of the extractor,
- * as source offsets will not otherwise match.
- */
-function getSourceCode(filename: string): string {
-    let code = fs.readFileSync(filename, "utf-8");
-
-    if (code.charCodeAt(0) === 0xfeff) {
-        code = code.substring(1);
-    }
-
-    return code;
 }
 
 function extractFile(filename: string): string {
@@ -184,10 +162,10 @@ function prepareNextFile() {
     }
 }
 
-function handleParseCommand(command: ParseCommand) {
+function handleParseCommand(command: ParseCommand, checkPending = true) {
     let filename = command.filename;
     let expectedFilename = state.pendingFiles[state.pendingFileIndex];
-    if (expectedFilename !== filename) {
+    if (expectedFilename !== filename && checkPending) {
         throw new Error("File requested out of order. Expected '" + expectedFilename + "' but got '" + filename + "'");
     }
     ++state.pendingFileIndex;
@@ -231,7 +209,7 @@ function getAstForFile(filename: string): ts.SourceFile {
 }
 
 function parseSingleFile(filename: string): {ast: ts.SourceFile, code: string} {
-    let code = getSourceCode(filename);
+    let code = ts.sys.readFile(filename);
 
     // create a compiler host that only allows access to `filename`
     let compilerHost: ts.CompilerHost = {
@@ -265,18 +243,18 @@ function parseSingleFile(filename: string): {ast: ts.SourceFile, code: string} {
 }
 
 function handleOpenProjectCommand(command: OpenProjectCommand) {
+    Error.stackTraceLimit = Infinity;
     let tsConfigFilename = String(command.tsConfig);
-    let tsConfigText = fs.readFileSync(tsConfigFilename, "utf8");
-    let tsConfig = ts.parseConfigFileTextToJson(tsConfigFilename, tsConfigText);
+    let tsConfig = ts.readConfigFile(tsConfigFilename, ts.sys.readFile);
     let basePath = pathlib.dirname(tsConfigFilename);
 
     let parseConfigHost: ts.ParseConfigHost = {
         useCaseSensitiveFileNames: true,
         readDirectory: ts.sys.readDirectory,
         fileExists: (path: string) => fs.existsSync(path),
-        readFile: getSourceCode,
+        readFile: ts.sys.readFile,
     };
-    let config = ts.parseJsonConfigFileContent(tsConfig, parseConfigHost, basePath);
+    let config = ts.parseJsonConfigFileContent(tsConfig.config, parseConfigHost, basePath);
     let project = new Project(tsConfigFilename, config, state.typeTable);
     project.load();
 
@@ -293,6 +271,17 @@ function handleOpenProjectCommand(command: OpenProjectCommand) {
         directoryExists: (path) => fs.existsSync(path),
         getCurrentDirectory: () => basePath,
     });
+
+    for (let typeRoot of typeRoots || []) {
+        if (fs.existsSync(typeRoot) && fs.statSync(typeRoot).isDirectory()) {
+            traverseTypeRoot(typeRoot, "");
+        }
+    }
+
+    for (let sourceFile of program.getSourceFiles()) {
+        addModuleBindingsFromModuleDeclarations(sourceFile);
+        addModuleBindingsFromFilePath(sourceFile);
+    }
 
     /** Concatenates two imports paths. These always use `/` as path separator. */
     function joinModulePath(prefix: string, suffix: string) {
@@ -323,36 +312,74 @@ function handleOpenProjectCommand(command: OpenProjectCommand) {
             if (sourceFile == null) {
                 continue;
             }
-            let symbol = typeChecker.getSymbolAtLocation(sourceFile);
-            if (symbol == null) continue; // Happens if the source file is not a module.
-
-            let canonicalSymbol = getEffectiveExportTarget(symbol); // Follow `export = X` declarations.
-            let symbolId = state.typeTable.getSymbolId(canonicalSymbol);
-
-            let importPath = (child === "index.d.ts")
-                ? importPrefix
-                : joinModulePath(importPrefix, pathlib.basename(child, ".d.ts"));
-
-            // Associate the module name with this symbol.
-            state.typeTable.addModuleMapping(symbolId, importPath);
-
-            // Associate global variable names with this module.
-            // For each `export as X` declaration, the global X refers to this module.
-            // Note: the `globalExports` map is stored on the original symbol, not the target of `export=`.
-            if (symbol.globalExports != null) {
-                symbol.globalExports.forEach((global: ts.Symbol) => {
-                  state.typeTable.addGlobalMapping(symbolId, global.name);
-                });
-            }
+            addModuleBindingFromRelativePath(sourceFile, importPrefix, child);
         }
     }
-    for (let typeRoot of typeRoots || []) {
-        traverseTypeRoot(typeRoot, "");
+
+    /**
+     * Emits module bindings for a module with relative path `folder/baseName`.
+     */
+    function addModuleBindingFromRelativePath(sourceFile: ts.SourceFile, folder: string, baseName: string) {
+        let symbol = typeChecker.getSymbolAtLocation(sourceFile);
+        if (symbol == null) return; // Happens if the source file is not a module.
+
+        let stem = getStem(baseName);
+        let importPath = (stem === "index")
+            ? folder
+            : joinModulePath(folder, stem);
+
+        let canonicalSymbol = getEffectiveExportTarget(symbol); // Follow `export = X` declarations.
+        let symbolId = state.typeTable.getSymbolId(canonicalSymbol);
+
+        // Associate the module name with this symbol.
+        state.typeTable.addModuleMapping(symbolId, importPath);
+
+        // Associate global variable names with this module.
+        // For each `export as X` declaration, the global X refers to this module.
+        // Note: the `globalExports` map is stored on the original symbol, not the target of `export=`.
+        if (symbol.globalExports != null) {
+            symbol.globalExports.forEach((global: ts.Symbol) => {
+              state.typeTable.addGlobalMapping(symbolId, global.name);
+            });
+        }
     }
 
-    // Emit module name bindings for external module declarations, i.e: `declare module 'X' {..}`
-    // These can generally occur anywhere; they may or may not be on the type root path.
-    for (let sourceFile of program.getSourceFiles()) {
+    /**
+     * Returns the basename of `file` without its extension, while treating `.d.ts` as a
+     * single extension.
+     */
+    function getStem(file: string) {
+        if (file.endsWith(".d.ts")) {
+            return pathlib.basename(file, ".d.ts");
+        }
+        let base = pathlib.basename(file);
+        let dot = base.lastIndexOf('.');
+        return dot === -1 || dot === 0 ? base : base.substring(0, dot);
+    }
+
+    /**
+     * Emits module bindings for a module based on its file path.
+     *
+     * This looks for enclosing `node_modules` folders to determine the module name.
+     * This is needed for modules that ship their own type definitions as opposed to having
+     * type definitions loaded from a type root (conventionally named `@types/xxx`).
+     */
+    function addModuleBindingsFromFilePath(sourceFile: ts.SourceFile) {
+        let fullPath = sourceFile.fileName;
+        let index = fullPath.lastIndexOf('/node_modules/');
+        if (index === -1) return;
+        let relativePath = fullPath.substring(index + '/node_modules/'.length);
+        // Ignore node_modules/@types folders here as they are typically handled as type roots.
+        if (relativePath.startsWith("@types/")) return;
+        let { dir, base } = pathlib.parse(relativePath);
+        addModuleBindingFromRelativePath(sourceFile, dir, base);
+    }
+
+    /**
+     * Emit module name bindings for external module declarations, i.e: `declare module 'X' {..}`
+     * These can generally occur anywhere; they may or may not be on the type root path.
+     */
+    function addModuleBindingsFromModuleDeclarations(sourceFile: ts.SourceFile) {
         for (let stmt of sourceFile.statements) {
             if (ts.isModuleDeclaration(stmt) && ts.isStringLiteral(stmt.name)) {
                 let symbol = (stmt as any).symbol;
@@ -491,13 +518,13 @@ if (process.argv.length > 2) {
             handleParseCommand({
                 command: "parse",
                 filename: sf.fileName,
-            });
+            }, false);
         }
     } else if (pathlib.extname(argument) === ".ts" || pathlib.extname(argument) === ".tsx") {
         handleParseCommand({
             command: "parse",
             filename: argument,
-        });
+        }, false);
     } else {
         console.error("Unrecognized file or flag: " + argument);
     }

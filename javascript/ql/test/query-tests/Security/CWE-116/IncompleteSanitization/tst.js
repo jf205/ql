@@ -192,3 +192,12 @@ app.get('/some/path', function(req, res) {
 	var indirect = /'/;
 	return s.replace(indirect, ""); // NOT OK
 });
+
+(function (s) {
+	s.replace('"', '').replace('"', ''); // OK
+	s.replace("'", "").replace("'", ""); // OK
+});
+
+function bad18(p) {
+  return p.replace("/../", ""); // NOT OK
+}

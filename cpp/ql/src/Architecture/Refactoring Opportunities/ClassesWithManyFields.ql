@@ -3,7 +3,7 @@
  * @description Finds classes with many fields; they could probably be refactored by breaking them down into smaller classes, and using composition.
  * @kind problem
  * @problem.severity recommendation
- * @precision high
+ * @precision medium
  * @id cpp/class-many-fields
  * @tags maintainability
  *       statistical
@@ -42,9 +42,7 @@ newtype TVariableDeclarationInfo =
  */
 class VariableDeclarationLine extends TVariableDeclarationInfo {
   Class c;
-
   File f;
-
   int line;
 
   VariableDeclarationLine() {

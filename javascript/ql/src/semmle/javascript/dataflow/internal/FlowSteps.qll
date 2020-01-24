@@ -10,7 +10,7 @@ import semmle.javascript.dataflow.Configuration
 /**
  * Holds if flow should be tracked through properties of `obj`.
  *
- * Flow is tracked through object literals, `module` and `module.exports` objects.
+ * Flow is tracked through `module` and `module.exports` objects.
  */
 predicate shouldTrackProperties(AbstractValue obj) {
   obj instanceof AbstractExportsObject or
@@ -66,19 +66,7 @@ predicate localExceptionStep(DataFlow::Node pred, DataFlow::Node succ) {
     or
     DataFlow::exceptionalInvocationReturnNode(pred, expr)
   |
-    // Propagate out of enclosing function.
-    not exists(getEnclosingTryStmt(expr.getEnclosingStmt())) and
-    exists(Function f |
-      f = expr.getEnclosingFunction() and
-      DataFlow::exceptionalFunctionReturnNode(succ, f)
-    )
-    or
-    // Propagate to enclosing try/catch.
-    // To avoid false flow, we only propagate to an unguarded catch clause.
-    exists(TryStmt try |
-      try = getEnclosingTryStmt(expr.getEnclosingStmt()) and
-      DataFlow::parameterNode(succ, try.getCatchClause().getAParameter())
-    )
+    succ = expr.getExceptionTarget()
   )
 }
 
@@ -109,7 +97,7 @@ private module CachedSteps {
    * This only holds for explicitly modeled partial calls.
    */
   private predicate partiallyCalls(
-    DataFlow::AdditionalPartialInvokeNode invk, DataFlow::AnalyzedNode callback, Function f
+    DataFlow::PartialInvokeNode invk, DataFlow::AnalyzedNode callback, Function f
   ) {
     invk.isPartialArgument(callback, _, _) and
     exists(AbstractFunction callee | callee = callback.getAValue() |
@@ -125,20 +113,27 @@ private module CachedSteps {
    */
   cached
   predicate argumentPassing(
-    DataFlow::InvokeNode invk, DataFlow::ValueNode arg, Function f, DataFlow::ParameterNode parm
+    DataFlow::InvokeNode invk, DataFlow::ValueNode arg, Function f, DataFlow::SourceNode parm
   ) {
     calls(invk, f) and
-    exists(int i |
-      f.getParameter(i) = parm.getParameter() and
-      not parm.isRestParameter() and
-      arg = invk.getArgument(i)
+    (
+      exists(int i, Parameter p |
+        f.getParameter(i) = p and
+        not p.isRestParameter() and
+        arg = invk.getArgument(i) and
+        parm = DataFlow::parameterNode(p)
+      )
+      or
+      arg = invk.(DataFlow::CallNode).getReceiver() and
+      parm = DataFlow::thisNode(f)
     )
     or
-    exists(DataFlow::Node callback, int i |
-      invk.(DataFlow::AdditionalPartialInvokeNode).isPartialArgument(callback, arg, i) and
+    exists(DataFlow::Node callback, int i, Parameter p |
+      invk.(DataFlow::PartialInvokeNode).isPartialArgument(callback, arg, i) and
       partiallyCalls(invk, callback, f) and
-      parm.getParameter() = f.getParameter(i) and
-      not parm.isRestParameter()
+      f.getParameter(i) = p and
+      not p.isRestParameter() and
+      parm = DataFlow::parameterNode(p)
     )
   }
 
@@ -148,19 +143,6 @@ private module CachedSteps {
    */
   cached
   predicate callStep(DataFlow::Node pred, DataFlow::Node succ) { argumentPassing(_, pred, _, succ) }
-
-  /**
-   * Gets the `try` statement containing `stmt` without crossing function boundaries
-   * or other `try ` statements.
-   */
-  cached
-  TryStmt getEnclosingTryStmt(Stmt stmt) {
-    result.getBody() = stmt
-    or
-    not stmt instanceof Function and
-    not stmt = any(TryStmt try).getBody() and
-    result = getEnclosingTryStmt(stmt.getParentStmt())
-  }
 
   /**
    * Holds if there is a flow step from `pred` to `succ` through:
@@ -296,7 +278,7 @@ private module CachedSteps {
    * that is, `succ` is a read of property `prop` from `pred`.
    */
   cached
-  predicate loadStep(DataFlow::Node pred, DataFlow::PropRead succ, string prop) {
+  predicate basicLoadStep(DataFlow::Node pred, DataFlow::PropRead succ, string prop) {
     succ.accesses(pred, prop)
   }
 
@@ -352,6 +334,7 @@ private module CachedSteps {
     DataFlow::thisNode(f).hasPropertyWrite(prop, rhs)
   }
 }
+
 import CachedSteps
 
 /**
@@ -381,11 +364,8 @@ newtype TPathSummary =
  */
 class PathSummary extends TPathSummary {
   Boolean hasReturn;
-
   Boolean hasCall;
-
   FlowLabel start;
-
   FlowLabel end;
 
   PathSummary() { this = MkPathSummary(hasReturn, hasCall, start, end) }
@@ -397,9 +377,7 @@ class PathSummary extends TPathSummary {
   boolean hasCall() { result = hasCall }
 
   /** Holds if the path represented by this summary contains no unmatched call or return steps. */
-  predicate isLevel() {
-    hasReturn = false and hasCall = false
-  }
+  predicate isLevel() { hasReturn = false and hasCall = false }
 
   /** Gets the flow label describing the value at the start of this flow path. */
   FlowLabel getStartLabel() { result = start }
@@ -479,3 +457,4 @@ module PathSummary {
    */
   PathSummary return() { exists(FlowLabel lbl | result = MkPathSummary(true, false, lbl, lbl)) }
 }
+

@@ -1,14 +1,16 @@
 private import csharp
 private import cil
 private import dotnet
+private import DataFlowDispatch
 private import DataFlowPrivate
-private import DataFlowPrivateCached as C
+private import semmle.code.csharp.Caching
+private import semmle.code.csharp.controlflow.Guards
 
 /**
  * An element, viewed as a node in a data flow graph. Either an expression
  * (`ExprNode`) or a parameter (`ParameterNode`).
  */
-class Node extends C::TNode {
+class Node extends TNode {
   /** Gets the expression corresponding to this node, if any. */
   DotNet::Expr asExpr() { result = this.(ExprNode).getExpr() }
 
@@ -17,7 +19,7 @@ class Node extends C::TNode {
    * if any.
    */
   Expr asExprAtNode(ControlFlow::Nodes::ElementNode cfn) {
-    this = C::TExprNode(cfn) and
+    this = TExprNode(cfn) and
     result = cfn.getElement()
   }
 
@@ -33,7 +35,7 @@ class Node extends C::TNode {
 
   /** Gets the enclosing callable of this node. */
   cached
-  DotNet::Callable getEnclosingCallable() { none() }
+  DataFlowCallable getEnclosingCallable() { none() }
 
   /** Gets the control flow node corresponding to this node, if any. */
   cached
@@ -46,6 +48,19 @@ class Node extends C::TNode {
   /** Gets the location of this node. */
   cached
   Location getLocation() { none() }
+
+  /**
+   * Holds if this element is at the specified location.
+   * The location spans column `startcolumn` of line `startline` to
+   * column `endcolumn` of line `endline` in file `filepath`.
+   * For more information, see
+   * [Locations](https://help.semmle.com/QL/learn-ql/ql/locations.html).
+   */
+  predicate hasLocationInfo(
+    string filepath, int startline, int startcolumn, int endline, int endcolumn
+  ) {
+    getLocation().hasLocationInfo(filepath, startline, startcolumn, endline, endcolumn)
+  }
 }
 
 /**
@@ -56,13 +71,13 @@ class Node extends C::TNode {
  * `ControlFlow::Node`s.
  */
 class ExprNode extends Node {
-  ExprNode() { this = C::TExprNode(_) or this = C::TCilExprNode(_) }
+  ExprNode() { this = TExprNode(_) or this = TCilExprNode(_) }
 
   /** Gets the expression corresponding to this node. */
   DotNet::Expr getExpr() {
     result = this.getExprAtNode(_)
     or
-    this = C::TCilExprNode(result)
+    this = TCilExprNode(result)
   }
 
   /**
@@ -70,24 +85,32 @@ class ExprNode extends Node {
    * if any.
    */
   Expr getExprAtNode(ControlFlow::Nodes::ElementNode cfn) {
-    this = C::TExprNode(cfn) and
+    this = TExprNode(cfn) and
     result = cfn.getElement()
   }
 
-  override DotNet::Callable getEnclosingCallable() {
+  override DataFlowCallable getEnclosingCallable() {
+    Stages::DataFlowStage::forceCachingInSameStage() and
     result = this.getExpr().getEnclosingCallable()
   }
 
-  override ControlFlow::Nodes::ElementNode getControlFlowNode() { this = C::TExprNode(result) }
+  override ControlFlow::Nodes::ElementNode getControlFlowNode() {
+    Stages::DataFlowStage::forceCachingInSameStage() and this = TExprNode(result)
+  }
 
-  override DotNet::Type getType() { result = this.getExpr().getType() }
+  override DotNet::Type getType() {
+    Stages::DataFlowStage::forceCachingInSameStage() and result = this.getExpr().getType()
+  }
 
-  override Location getLocation() { result = this.getExpr().getLocation() }
+  override Location getLocation() {
+    Stages::DataFlowStage::forceCachingInSameStage() and result = this.getExpr().getLocation()
+  }
 
   override string toString() {
+    Stages::DataFlowStage::forceCachingInSameStage() and
     result = this.getControlFlowNode().toString()
     or
-    this = C::TCilExprNode(_) and
+    this = TCilExprNode(_) and
     result = "CIL expression"
   }
 }
@@ -102,9 +125,9 @@ class ParameterNode extends Node {
     explicitParameterNode(this, _) or
     this.(SsaDefinitionNode).getDefinition() instanceof
       ImplicitCapturedParameterNodeImpl::SsaCapturedEntryDefinition or
-    this = C::TInstanceParameterNode(_) or
-    this = C::TCilParameterNode(_) or
-    this = C::TTaintedParameterNode(_)
+    this = TInstanceParameterNode(_) or
+    this = TCilParameterNode(_) or
+    this = TTaintedParameterNode(_)
   }
 
   /** Gets the parameter corresponding to this node, if any. */
@@ -114,7 +137,7 @@ class ParameterNode extends Node {
    * Holds if this node is the parameter of callable `c` at the specified
    * (zero-based) position.
    */
-  predicate isParameterOf(DotNet::Callable c, int i) { none() }
+  predicate isParameterOf(DataFlowCallable c, int i) { none() }
 }
 
 /** Gets a node corresponding to expression `e`. */
@@ -125,7 +148,15 @@ ExprNode exprNode(DotNet::Expr e) { result.getExpr() = e }
  */
 ParameterNode parameterNode(DotNet::Parameter p) { result.getParameter() = p }
 
-predicate localFlowStep = C::localFlowStepImpl/2;
+/**
+ * Holds if data flows from `nodeFrom` to `nodeTo` in exactly one local
+ * (intra-procedural) step.
+ */
+predicate localFlowStep(Node nodeFrom, Node nodeTo) {
+  simpleLocalFlowStep(nodeFrom, nodeTo)
+  or
+  extendedLocalFlowStep(nodeFrom, nodeTo)
+}
 
 /**
  * Holds if data flows from `source` to `sink` in zero or more local
@@ -134,10 +165,38 @@ predicate localFlowStep = C::localFlowStepImpl/2;
 predicate localFlow(Node source, Node sink) { localFlowStep*(source, sink) }
 
 /**
+ * Holds if data can flow from `e1` to `e2` in zero or more
+ * local (intra-procedural) steps.
+ */
+predicate localExprFlow(Expr e1, Expr e2) { localFlow(exprNode(e1), exprNode(e2)) }
+
+/**
  * A data flow node that jumps between callables. This can be extended in
  * framework code to add additional data flow steps.
  */
 abstract class NonLocalJumpNode extends Node {
   /** Gets a successor node that is potentially in another callable. */
   abstract Node getAJumpSuccessor(boolean preservesValue);
+}
+
+/**
+ * A guard that validates some expression.
+ *
+ * To use this in a configuration, extend the class and provide a
+ * characteristic predicate precisely specifying the guard, and override
+ * `checks` to specify what is being validated and in which branch.
+ *
+ * It is important that all extending classes in scope are disjoint.
+ */
+class BarrierGuard extends Guard {
+  /** Holds if this guard validates `e` upon evaluating to `v`. */
+  abstract predicate checks(Expr e, AbstractValue v);
+
+  /** Gets a node guarded by this guard. */
+  final ExprNode getAGuardedNode() {
+    exists(Expr e, AbstractValue v |
+      this.checks(e, v) and
+      this.controlsNode(result.getControlFlowNode(), e, v)
+    )
+  }
 }

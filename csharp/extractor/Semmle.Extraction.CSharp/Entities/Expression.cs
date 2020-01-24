@@ -4,6 +4,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Semmle.Extraction.CSharp.Populators;
 using Semmle.Extraction.Entities;
 using Semmle.Extraction.Kinds;
+using System.IO;
 using System.Linq;
 
 namespace Semmle.Extraction.CSharp.Entities
@@ -18,31 +19,52 @@ namespace Semmle.Extraction.CSharp.Entities
 
     class Expression : FreshEntity, IExpressionParentEntity
     {
-        public readonly Type Type;
+        private readonly IExpressionInfo Info;
+        public readonly AnnotatedType Type;
         public readonly Extraction.Entities.Location Location;
         public readonly ExprKind Kind;
 
         internal Expression(IExpressionInfo info)
             : base(info.Context)
         {
+            Info = info;
             Location = info.Location;
             Kind = info.Kind;
-            Type = info.Type ?? NullType.Create(cx);
+            Type = info.Type;
+            if (Type.Type is null)
+                Type = NullType.Create(cx);
 
-            cx.Emit(Tuples.expressions(this, Kind, Type.TypeRef));
-            if (info.Parent.IsTopLevelParent)
-                cx.Emit(Tuples.expr_parent_top_level(this, info.Child, info.Parent));
+            TryPopulate();
+        }
+
+        protected sealed override void Populate(TextWriter trapFile)
+        {
+            trapFile.expressions(this, Kind, Type.Type.TypeRef);
+            if (Info.Parent.IsTopLevelParent)
+                trapFile.expr_parent_top_level(this, Info.Child, Info.Parent);
             else
-                cx.Emit(Tuples.expr_parent(this, info.Child, info.Parent));
-            cx.Emit(Tuples.expr_location(this, Location));
+                trapFile.expr_parent(this, Info.Child, Info.Parent);
+            trapFile.expr_location(this, Location);
 
-            if (info.IsCompilerGenerated)
-                cx.Emit(Tuples.expr_compiler_generated(this));
+            var annotatedType = Type.Symbol;
+            if (!annotatedType.HasObliviousNullability())
+            {
+                var n = NullabilityEntity.Create(cx, Nullability.Create(annotatedType));
+                trapFile.type_nullability(this, n);
+            }
 
-            if (info.ExprValue is string value)
-                cx.Emit(Tuples.expr_value(this, value));
+            if(Info.FlowState != NullableFlowState.None)
+            {
+                trapFile.expr_flowstate(this, (int)Info.FlowState);
+            }
 
-            Type.ExtractGenerics();
+            if (Info.IsCompilerGenerated)
+                trapFile.expr_compiler_generated(this);
+
+            if (Info.ExprValue is string value)
+                trapFile.expr_value(this, value);
+
+            Type.Type.PopulateGenerics();
         }
 
         public override Microsoft.CodeAnalysis.Location ReportingLocation => Location.symbol;
@@ -114,21 +136,20 @@ namespace Semmle.Extraction.CSharp.Entities
         /// </summary>
         /// <param name="cx">Context</param>
         /// <param name="node">The expression.</param>
-        public void OperatorCall(ExpressionSyntax node)
+        public void OperatorCall(TextWriter trapFile, ExpressionSyntax node)
         {
             var @operator = cx.GetSymbolInfo(node);
             if (@operator.Symbol is IMethodSymbol method)
             {
-
                 var callType = GetCallType(cx, node);
                 if (callType == CallType.Dynamic)
                 {
                     UserOperator.OperatorSymbol(method.Name, out string operatorName);
-                    cx.Emit(Tuples.dynamic_member_name(this, operatorName));
+                    trapFile.dynamic_member_name(this, operatorName);
                     return;
                 }
 
-                cx.Emit(Tuples.expr_call(this, Method.Create(cx, method)));
+                trapFile.expr_call(this, Method.Create(cx, method));
             }
         }
 
@@ -200,18 +221,18 @@ namespace Semmle.Extraction.CSharp.Entities
             throw new InternalError(node, "Unable to locate a ConditionalAccessExpression");
         }
 
-        public void MakeConditional()
+        public void MakeConditional(TextWriter trapFile)
         {
-            cx.Emit(Tuples.conditional_access(this));
+            trapFile.conditional_access(this);
         }
 
-        public void PopulateArguments(BaseArgumentListSyntax args, int child)
+        public void PopulateArguments(TextWriter trapFile, BaseArgumentListSyntax args, int child)
         {
             foreach (var arg in args.Arguments)
-                PopulateArgument(arg, child++);
+                PopulateArgument(trapFile, arg, child++);
         }
 
-        private void PopulateArgument(ArgumentSyntax arg, int child)
+        private void PopulateArgument(TextWriter trapFile, ArgumentSyntax arg, int child)
         {
             var expr = Create(cx, arg.Expression, this, child);
             int mode;
@@ -232,11 +253,11 @@ namespace Semmle.Extraction.CSharp.Entities
                 default:
                     throw new InternalError(arg, "Unknown argument type");
             }
-            cx.Emit(Tuples.expr_argument(expr, mode));
+            trapFile.expr_argument(expr, mode);
 
             if (arg.NameColon != null)
             {
-                cx.Emit(Tuples.expr_argument_name(expr, arg.NameColon.Name.Identifier.Text));
+                trapFile.expr_argument_name(expr, arg.NameColon.Name.Identifier.Text);
             }
         }
 
@@ -271,7 +292,7 @@ namespace Semmle.Extraction.CSharp.Entities
         protected Expression(ExpressionNodeInfo info)
             : base(info)
         {
-            Syntax = (SyntaxNode)info.Node;
+           Syntax = (SyntaxNode)info.Node;
         }
 
         /// <summary>
@@ -282,11 +303,11 @@ namespace Semmle.Extraction.CSharp.Entities
         /// <see cref="Expression.Create(Context, ExpressionSyntax, IEntity, int, ITypeSymbol)"/> will
         /// still be valid.
         /// </summary>
-        protected abstract void Populate();
+        protected abstract void PopulateExpression(TextWriter trapFile);
 
-        protected Expression TryPopulate()
+        protected new Expression TryPopulate()
         {
-            cx.Try(Syntax, null, Populate);
+            cx.Try(Syntax, null, ()=>PopulateExpression(cx.TrapWriter.Writer));
             return this;
         }
     }
@@ -301,7 +322,7 @@ namespace Semmle.Extraction.CSharp.Entities
         /// <summary>
         /// The type of the expression.
         /// </summary>
-        Type Type { get; }
+        AnnotatedType Type { get; }
 
         /// <summary>
         /// The location of the expression.
@@ -335,6 +356,8 @@ namespace Semmle.Extraction.CSharp.Entities
         /// is null.
         /// </summary>
         string ExprValue { get; }
+
+        NullableFlowState FlowState { get; }
     }
 
     /// <summary>
@@ -343,7 +366,7 @@ namespace Semmle.Extraction.CSharp.Entities
     class ExpressionInfo : IExpressionInfo
     {
         public Context Context { get; }
-        public Type Type { get; }
+        public AnnotatedType Type { get; }
         public Extraction.Entities.Location Location { get; }
         public ExprKind Kind { get; }
         public IExpressionParentEntity Parent { get; }
@@ -351,7 +374,8 @@ namespace Semmle.Extraction.CSharp.Entities
         public bool IsCompilerGenerated { get; }
         public string ExprValue { get; }
 
-        public ExpressionInfo(Context cx, Type type, Extraction.Entities.Location location, ExprKind kind, IExpressionParentEntity parent, int child, bool isCompilerGenerated, string value)
+        public ExpressionInfo(Context cx, AnnotatedType type, Extraction.Entities.Location location, ExprKind kind,
+            IExpressionParentEntity parent, int child, bool isCompilerGenerated, string value)
         {
             Context = cx;
             Type = type;
@@ -362,6 +386,9 @@ namespace Semmle.Extraction.CSharp.Entities
             ExprValue = value;
             IsCompilerGenerated = isCompilerGenerated;
         }
+
+        // Synthetic expressions don't have a flow state.
+        public NullableFlowState FlowState => NullableFlowState.None;
     }
 
     /// <summary>
@@ -381,13 +408,7 @@ namespace Semmle.Extraction.CSharp.Entities
             Parent = parent;
             Child = child;
             TypeInfo = typeInfo;
-            Conversion = cx.Model(node).GetConversion(node);
-        }
-
-        public ExpressionNodeInfo(Context cx, ExpressionSyntax node, IExpressionParentEntity parent, int child, ITypeSymbol type) :
-            this(cx, node, parent, child)
-        {
-            Type = Type.Create(cx, type);
+            Conversion = cx.GetModel(node).GetConversion(node);
         }
 
         public Context Context { get; }
@@ -397,29 +418,30 @@ namespace Semmle.Extraction.CSharp.Entities
         public TypeInfo TypeInfo { get; }
         public Microsoft.CodeAnalysis.CSharp.Conversion Conversion { get; }
 
-        public ITypeSymbol ResolvedType => Context.DisambiguateType(TypeInfo.Type);
-        public ITypeSymbol ConvertedType => Context.DisambiguateType(TypeInfo.ConvertedType);
+        public AnnotatedTypeSymbol ResolvedType => new AnnotatedTypeSymbol(TypeInfo.Type.DisambiguateType(), TypeInfo.Nullability.Annotation);
+        public AnnotatedTypeSymbol ConvertedType => new AnnotatedTypeSymbol(TypeInfo.ConvertedType.DisambiguateType(), TypeInfo.ConvertedNullability.Annotation);
 
-        public ITypeSymbol ExpressionType
+        public AnnotatedTypeSymbol ExpressionType
         {
             get
             {
                 var type = ResolvedType;
 
-                if (type == null)
-                    type = Context.DisambiguateType(TypeInfo.Type ?? TypeInfo.ConvertedType);
+                if (type.Symbol == null)
+                    type.Symbol = (TypeInfo.Type ?? TypeInfo.ConvertedType).DisambiguateType();
 
                 // Roslyn workaround: It can't work out the type of "new object[0]"
                 // Clearly a bug.
-                if (type != null && type.TypeKind == Microsoft.CodeAnalysis.TypeKind.Error)
+                if (type.Symbol?.TypeKind == Microsoft.CodeAnalysis.TypeKind.Error)
                 {
                     var arrayCreation = Node as ArrayCreationExpressionSyntax;
                     if (arrayCreation != null)
                     {
                         var elementType = Context.GetType(arrayCreation.Type.ElementType);
 
-                        if (elementType != null)
-                            return Context.Compilation.CreateArrayTypeSymbol(elementType, arrayCreation.Type.RankSpecifiers.Count);
+                        if (elementType.Symbol != null)
+                            // There seems to be no way to create an array with a nullable element at present.
+                            return new AnnotatedTypeSymbol(Context.Compilation.CreateArrayTypeSymbol(elementType.Symbol, arrayCreation.Type.RankSpecifiers.Count), NullableAnnotation.NotAnnotated);
                     }
 
                     Context.ModelError(Node, "Failed to determine type");
@@ -445,7 +467,7 @@ namespace Semmle.Extraction.CSharp.Entities
             }
         }
 
-        public SemanticModel Model => Context.Model(Node);
+        public SemanticModel Model => Context.GetModel(Node);
 
         public string ExprValue
         {
@@ -456,14 +478,14 @@ namespace Semmle.Extraction.CSharp.Entities
             }
         }
 
-        Type cachedType;
+        AnnotatedType cachedType;
 
-        public Type Type
+        public AnnotatedType Type
         {
             get
             {
-                if (cachedType == null)
-                    cachedType = Type.Create(Context, ExpressionType);
+                if (cachedType.Type == null)
+                    cachedType = Entities.Type.Create(Context, ExpressionType);
                 return cachedType;
             }
             set
@@ -506,7 +528,7 @@ namespace Semmle.Extraction.CSharp.Entities
             return this;
         }
 
-        public ExpressionNodeInfo SetType(Type type)
+        public ExpressionNodeInfo SetType(AnnotatedType type)
         {
             Type = type;
             return this;
@@ -529,5 +551,7 @@ namespace Semmle.Extraction.CSharp.Entities
                 return cachedSymbolInfo;
             }
         }
+
+        public NullableFlowState FlowState => TypeInfo.Nullability.FlowState;
     }
 }

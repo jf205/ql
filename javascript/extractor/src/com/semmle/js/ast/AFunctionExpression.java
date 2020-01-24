@@ -3,6 +3,7 @@ package com.semmle.js.ast;
 import com.semmle.ts.ast.DecoratorList;
 import com.semmle.ts.ast.ITypeExpression;
 import com.semmle.ts.ast.TypeParameter;
+import com.semmle.util.data.IntList;
 import java.util.List;
 
 /**
@@ -12,6 +13,7 @@ import java.util.List;
 public abstract class AFunctionExpression extends Expression implements IFunction {
   private final AFunction<? extends Node> fn;
   private int symbol = -1;
+  private int declaredSignature = -1;
 
   public AFunctionExpression(
       String type,
@@ -25,7 +27,8 @@ public abstract class AFunctionExpression extends Expression implements IFunctio
       List<ITypeExpression> parameterTypes,
       List<DecoratorList> parameterDecorators,
       ITypeExpression returnType,
-      ITypeExpression thisParameterType) {
+      ITypeExpression thisParameterType,
+      IntList optionalParameterIndices) {
     super(type, loc);
     this.fn =
         new AFunction<Node>(
@@ -38,7 +41,8 @@ public abstract class AFunctionExpression extends Expression implements IFunctio
             parameterTypes,
             parameterDecorators,
             returnType,
-            thisParameterType);
+            thisParameterType,
+            optionalParameterIndices);
   }
 
   public AFunctionExpression(String type, SourceLocation loc, AFunction<? extends Node> fn) {
@@ -143,5 +147,19 @@ public abstract class AFunctionExpression extends Expression implements IFunctio
   @Override
   public void setSymbol(int symbol) {
     this.symbol = symbol;
+  }
+
+  @Override
+  public int getDeclaredSignatureId() {
+    return declaredSignature;
+  }
+
+  @Override
+  public void setDeclaredSignatureId(int id) {
+    declaredSignature = id;
+  }
+
+  public IntList getOptionalParameterIndices() {
+    return fn.getOptionalParmaeterIndices();
   }
 }

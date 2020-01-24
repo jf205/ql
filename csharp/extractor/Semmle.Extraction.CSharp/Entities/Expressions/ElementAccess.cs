@@ -4,6 +4,7 @@ using Semmle.Extraction.Kinds;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis;
 using Semmle.Extraction.Entities;
+using System.IO;
 
 namespace Semmle.Extraction.CSharp.Entities.Expressions
 {
@@ -19,7 +20,7 @@ namespace Semmle.Extraction.CSharp.Entities.Expressions
         readonly ExpressionSyntax Qualifier;
         readonly BracketedArgumentListSyntax ArgumentList;
 
-        protected override void Populate()
+        protected override void PopulateExpression(TextWriter trapFile)
         {
             if (Kind == ExprKind.POINTER_INDIRECTION)
             {
@@ -27,7 +28,7 @@ namespace Semmle.Extraction.CSharp.Entities.Expressions
                 var add = new Expression(new ExpressionInfo(cx, qualifierInfo.Type, Location, ExprKind.ADD, this, 0, false, null));
                 qualifierInfo.SetParent(add, 0);
                 CreateFromNode(qualifierInfo);
-                PopulateArguments(ArgumentList, 1);
+                PopulateArguments(trapFile, ArgumentList, 1);
             }
             else
             {
@@ -43,7 +44,7 @@ namespace Semmle.Extraction.CSharp.Entities.Expressions
                 var indexer = symbolInfo.Symbol as IPropertySymbol;
                 if (indexer != null)
                 {
-                    cx.Emit(Tuples.expr_access(this, Indexer.Create(cx, indexer)));
+                    trapFile.expr_access(this, Indexer.Create(cx, indexer));
                 }
             }
         }
@@ -55,9 +56,9 @@ namespace Semmle.Extraction.CSharp.Entities.Expressions
             var qualifierType = cx.GetType(qualifier);
 
             // This is a compilation error, so make a guess and continue.
-            if (qualifierType == null) return ExprKind.ARRAY_ACCESS;
+            if (qualifierType.Symbol == null) return ExprKind.ARRAY_ACCESS;
 
-            if (qualifierType.TypeKind == Microsoft.CodeAnalysis.TypeKind.Pointer)
+            if (qualifierType.Symbol.TypeKind == Microsoft.CodeAnalysis.TypeKind.Pointer)
             {
                 // Convert expressions of the form a[b] into *(a+b)
                 return ExprKind.POINTER_INDIRECTION;
@@ -65,7 +66,7 @@ namespace Semmle.Extraction.CSharp.Entities.Expressions
 
             return IsDynamic(cx, qualifier) ?
                 ExprKind.DYNAMIC_ELEMENT_ACCESS :
-                qualifierType.TypeKind == Microsoft.CodeAnalysis.TypeKind.Array ?
+                qualifierType.Symbol.TypeKind == Microsoft.CodeAnalysis.TypeKind.Array ?
                     ExprKind.ARRAY_ACCESS :
                     ExprKind.INDEXER_ACCESS;
         }
@@ -86,10 +87,10 @@ namespace Semmle.Extraction.CSharp.Entities.Expressions
 
         public static Expression Create(ExpressionNodeInfo info) => new BindingElementAccess(info).TryPopulate();
 
-        protected override void Populate()
+        protected override void PopulateExpression(TextWriter trapFile)
         {
-            base.Populate();
-            MakeConditional();
+            base.PopulateExpression(trapFile);
+            MakeConditional(trapFile);
         }
     }
 }

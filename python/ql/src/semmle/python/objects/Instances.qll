@@ -49,6 +49,14 @@ abstract class InstanceObject extends ObjectInternal {
     /** Holds if `init` in the context `callee` is the initializer of this instance */
     abstract predicate initializer(PythonFunctionObjectInternal init, Context callee);
 
+    override string getName() { none() }
+
+    override predicate contextSensitiveCallee() { none() }
+
+    override ObjectInternal getIterNext() { result = ObjectInternal::unknown() }
+
+    override predicate isNotSubscriptedType() { any() }
+
 }
 
 private predicate self_variable_reaching_init_exit(EssaVariable self) {
@@ -85,7 +93,14 @@ class SpecificInstanceInternal extends TSpecificInstance, InstanceObject {
     override predicate notTestableForEquality() { none() }
 
     override ObjectInternal getClass() {
-        this = TSpecificInstance(_, result, _)
+        exists(ClassObjectInternal cls, ClassDecl decl |
+            this = TSpecificInstance(_, cls, _) and
+            decl = cls.getClassDeclaration() |
+            if decl.callReturnsInstance() then
+                result = cls
+            else
+               result = TUnknownClass()
+        )
     }
 
     /** Gets the `Builtin` for this object, if any.
@@ -157,6 +172,8 @@ class SpecificInstanceInternal extends TSpecificInstance, InstanceObject {
             cls.lookup("__init__", init, _)
         )
     }
+
+    override predicate useOriginAsLegacyObject() { none() }
 
 }
 
@@ -260,6 +277,8 @@ class SelfInstanceInternal extends TSelfInstance, InstanceObject {
         this.getClass().attribute("__init__", init, _)
     }
 
+    override predicate useOriginAsLegacyObject() { none() }
+
 }
 
 /** A class representing a value that has a known class, but no other information */
@@ -362,6 +381,16 @@ class UnknownInstanceInternal extends TUnknownInstance, ObjectInternal {
         result = lengthFromClass(this.getClass())
     }
 
+    override string getName() { none() }
+
+    override predicate contextSensitiveCallee() { none() }
+
+    override predicate useOriginAsLegacyObject() { any() }
+
+    override ObjectInternal getIterNext() { result = ObjectInternal::unknown() }
+
+    override predicate isNotSubscriptedType() { any() }
+
 }
 
 private int lengthFromClass(ClassObjectInternal cls) {
@@ -436,14 +465,19 @@ class SuperInstance extends TSuperInstance, ObjectInternal {
     pragma [noinline] override predicate descriptorGetInstance(ObjectInternal instance, ObjectInternal value, CfgOrigin origin) { none() }
 
     pragma [noinline] override predicate attribute(string name, ObjectInternal value, CfgOrigin origin) {
-        PointsToInternal::attributeRequired(this, name) and
         exists(ObjectInternal cls_attr, CfgOrigin attr_orig |
-            this.lookup(name, cls_attr, attr_orig)
+            this.attribute_descriptor(name, cls_attr, attr_orig)
             |
             cls_attr.isDescriptor() = false and value = cls_attr and origin = attr_orig
             or
             cls_attr.isDescriptor() = true and cls_attr.descriptorGetInstance(this.getSelf(), value, origin)
         )
+    }
+
+    /* Helper for `attribute` */
+    pragma [noinline] private predicate attribute_descriptor(string name, ObjectInternal cls_attr, CfgOrigin attr_orig) {
+        PointsToInternal::attributeRequired(this, name) and
+        this.lookup(name, cls_attr, attr_orig)
     }
 
     private predicate lookup(string name, ObjectInternal value, CfgOrigin origin) {
@@ -460,6 +494,16 @@ class SuperInstance extends TSuperInstance, ObjectInternal {
     override int length() {
         none()
     }
+
+    override string getName() { none() }
+
+    override predicate contextSensitiveCallee() { none() }
+
+    override predicate useOriginAsLegacyObject() { any() }
+
+    override ObjectInternal getIterNext() { result = ObjectInternal::unknown() }
+
+    override predicate isNotSubscriptedType() { any() }
 
 }
 

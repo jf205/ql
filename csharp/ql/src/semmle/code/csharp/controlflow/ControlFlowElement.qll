@@ -5,6 +5,7 @@ private import semmle.code.csharp.ExprOrStmtParent
 private import ControlFlow
 private import ControlFlow::BasicBlocks
 private import SuccessorTypes
+private import semmle.code.csharp.Caching
 
 /**
  * A program element that can possess control flow. That is, either a statement or
@@ -31,20 +32,20 @@ class ControlFlowElement extends ExprOrStmtParent, @control_flow_element {
    * several `ControlFlow::Node`s, for example to represent the continuation
    * flow in a `try/catch/finally` construction.
    */
-  Node getAControlFlowNode() { result.getElement() = this }
+  Nodes::ElementNode getAControlFlowNode() { result.getElement() = this }
 
   /**
    * Gets a first control flow node executed within this element.
    */
-  Node getAControlFlowEntryNode() {
-    result = ControlFlowGraph::Internal::getAControlFlowEntryNode(this).getAControlFlowNode()
+  Nodes::ElementNode getAControlFlowEntryNode() {
+    result = Internal::getAControlFlowEntryNode(this).getAControlFlowNode()
   }
 
   /**
    * Gets a potential last control flow node executed within this element.
    */
-  Node getAControlFlowExitNode() {
-    result = ControlFlowGraph::Internal::getAControlFlowExitNode(this).getAControlFlowNode()
+  Nodes::ElementNode getAControlFlowExitNode() {
+    result = Internal::getAControlFlowExitNode(this).getAControlFlowNode()
   }
 
   /**
@@ -156,6 +157,7 @@ class ControlFlowElement extends ExprOrStmtParent, @control_flow_element {
 
   cached
   private predicate controlsBlockSplit(BasicBlock controlled, ConditionalSuccessor s) {
+    Stages::GuardsStage::forceCachingInSameStage() and
     this.immediatelyControlsBlockSplit(controlled, s)
     or
     // Equivalent with

@@ -37,9 +37,7 @@ DataFlow::SourceNode document() { result = DOM::documentRef() }
 predicate isDocument(Expr e) { DOM::documentRef().flowsToExpr(e) }
 
 /** Holds if `e` could refer to the document URL. */
-predicate isDocumentURL(Expr e) {
-  e.flow() = DOM::locationSource()
-}
+predicate isDocumentURL(Expr e) { e.flow() = DOM::locationSource() }
 
 /**
  * Holds if `pacc` accesses a part of `document.location` that is
@@ -71,9 +69,9 @@ class DomMethodCallExpr extends MethodCallExpr {
       or
       name = "writeln"
       or
-      name = "insertAdjacentHTML" and argPos = 0
+      name = "insertAdjacentHTML" and argPos = 1
       or
-      name = "insertAdjacentElement" and argPos = 0
+      name = "insertAdjacentElement" and argPos = 1
       or
       name = "insertBefore" and argPos = 0
       or
@@ -81,7 +79,16 @@ class DomMethodCallExpr extends MethodCallExpr {
       or
       name = "appendChild" and argPos = 0
       or
-      name = "setAttribute" and argPos = 0
+      (
+        name = "setAttribute" and argPos = 1
+        or
+        name = "setAttributeNS" and argPos = 2
+      ) and
+      // restrict to potentially dangerous attributes
+      exists(string attr | 
+        attr = "action" or attr = "formaction" or attr = "href" or attr = "src" or attr = "xlink:href" |
+        getArgument(argPos - 1).getStringValue().toLowerCase() = attr
+      )
     )
   }
 }
@@ -167,18 +174,20 @@ private module PersistentWebStorage {
  * An event handler that handles `postMessage` events.
  */
 class PostMessageEventHandler extends Function {
+  int paramIndex;
+
   PostMessageEventHandler() {
-    exists(CallExpr addEventListener |
-      addEventListener.getCallee().accessesGlobal("addEventListener") and
+    exists(DataFlow::CallNode addEventListener |
+      addEventListener = DataFlow::globalVarRef("addEventListener").getACall() and
       addEventListener.getArgument(0).mayHaveStringValue("message") and
-      addEventListener.getArgument(1).analyze().getAValue().(AbstractFunction).getFunction() = this
+      addEventListener.getArgument(1).getABoundFunctionValue(paramIndex).getFunction() = this
     )
   }
 
   /**
    * Gets the parameter that contains the event.
    */
-  SimpleParameter getEventParameter() { result = getParameter(0) }
+  Parameter getEventParameter() { result = getParameter(paramIndex) }
 }
 
 /**
@@ -202,7 +211,7 @@ private class WindowNameAccess extends RemoteFlowSource {
     this = DataFlow::globalObjectRef().getAPropertyRead("name")
     or
     // Reference to `name` on a container that does not assign to it.
-    this.accessesGlobal("name") and
+    this.asExpr().(GlobalVarAccess).getName() = "name" and
     not exists(VarDef def |
       def.getAVariable().(GlobalVariable).getName() = "name" and
       def.getContainer() = this.asExpr().getContainer()

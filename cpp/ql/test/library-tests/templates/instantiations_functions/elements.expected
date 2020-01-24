@@ -32,6 +32,7 @@
 | file://:0:0:0:0 | __ptr32 |
 | file://:0:0:0:0 | __ptr64 |
 | file://:0:0:0:0 | __sptr |
+| file://:0:0:0:0 | __super |
 | file://:0:0:0:0 | __uptr |
 | file://:0:0:0:0 | __va_list_tag |
 | file://:0:0:0:0 | __va_list_tag & |
@@ -113,6 +114,7 @@
 | file://:0:0:0:0 | int & |
 | file://:0:0:0:0 | int * |
 | file://:0:0:0:0 | is_constexpr |
+| file://:0:0:0:0 | is_thread_local |
 | file://:0:0:0:0 | long |
 | file://:0:0:0:0 | long double |
 | file://:0:0:0:0 | long long |
@@ -316,8 +318,8 @@
 | test.cpp:19:9:19:24 | call to expression |
 | test.cpp:19:9:19:25 | ExprStmt |
 | test.cpp:19:9:19:25 | ExprStmt |
-| test.cpp:19:15:19:18 | Unknown literal |
 | test.cpp:19:15:19:18 | call to funx |
+| test.cpp:19:15:19:18 | funx |
 | test.cpp:19:20:19:23 | (reference to) |
 | test.cpp:19:20:19:23 | valx |
 | test.cpp:19:20:19:23 | valx |
@@ -355,8 +357,8 @@
 | test.cpp:30:13:30:22 | call to expression |
 | test.cpp:30:13:30:23 | ExprStmt |
 | test.cpp:30:13:30:23 | ExprStmt |
-| test.cpp:30:15:30:20 | Unknown literal |
 | test.cpp:30:15:30:20 | call to eparse |
+| test.cpp:30:15:30:20 | eparse |
 | test.cpp:31:9:31:9 | return ... |
 | test.cpp:31:9:31:9 | return ... |
 | test.cpp:34:6:34:11 | define |

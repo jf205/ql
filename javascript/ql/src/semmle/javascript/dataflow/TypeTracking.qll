@@ -6,11 +6,17 @@
  * a given value came from.
  */
 
-import javascript
+private import javascript
 private import internal.FlowSteps
 
 private class PropertyName extends string {
-  PropertyName() { this = any(DataFlow::PropRef pr).getPropertyName() }
+  PropertyName() {
+    this = any(DataFlow::PropRef pr).getPropertyName()
+    or
+    AccessPath::isAssignedInUniqueFile(this)
+    or
+    exists(AccessPath::getAnAssignmentTo(_, this))
+  }
 }
 
 private class OptionalPropertyName extends string {
@@ -51,6 +57,7 @@ module StepSummary {
   /**
    * INTERNAL: Use `SourceNode.track()` or `SourceNode.backtrack()` instead.
    */
+  cached
   predicate step(DataFlow::SourceNode pred, DataFlow::SourceNode succ, StepSummary summary) {
     exists(DataFlow::Node mid | pred.flowsTo(mid) | smallstep(mid, succ, summary))
   }
@@ -83,8 +90,61 @@ module StepSummary {
       basicStoreStep(pred, succ, prop) and
       summary = StoreStep(prop)
       or
-      loadStep(pred, succ, prop) and
+      basicLoadStep(pred, succ, prop) and
       summary = LoadStep(prop)
+    )
+    or
+    any(AdditionalTypeTrackingStep st).step(pred, succ) and
+    summary = LevelStep()
+    or
+    // Store to global access path
+    exists(string name |
+      pred = AccessPath::getAnAssignmentTo(name) and
+      AccessPath::isAssignedInUniqueFile(name) and
+      succ = DataFlow::globalAccessPathRootPseudoNode() and
+      summary = StoreStep(name)
+    )
+    or
+    // Load from global access path
+    exists(string name |
+      succ = AccessPath::getAReferenceTo(name) and
+      AccessPath::isAssignedInUniqueFile(name) and
+      pred = DataFlow::globalAccessPathRootPseudoNode() and
+      summary = LoadStep(name)
+    )
+    or
+    // Store to non-global access path
+    exists(string name |
+      pred = AccessPath::getAnAssignmentTo(succ, name) and
+      summary = StoreStep(name)
+    )
+    or
+    // Load from non-global access path
+    exists(string name |
+      succ = AccessPath::getAReferenceTo(pred, name) and
+      summary = LoadStep(name) and
+      name != ""
+    )
+    or
+    // Summarize calls with flow directly from a parameter to a return.
+    exists(DataFlow::ParameterNode param, DataFlow::FunctionNode fun |
+      (
+        param.flowsTo(fun.getAReturn()) and
+        summary = LevelStep()
+        or
+        exists(string prop |
+          param.getAPropertyRead(prop).flowsTo(fun.getAReturn()) and
+          summary = LoadStep(prop)
+        )
+      ) and
+      if param = fun.getAParameter() then (
+        // Step from argument to call site.
+        argumentPassing(succ, pred, fun.getFunction(), param)
+      ) else (
+        // Step from captured parameter to local call sites
+        pred = param and
+        succ = fun.getAnInvocation()
+      )
     )
   }
 }
@@ -92,12 +152,10 @@ module StepSummary {
 private newtype TTypeTracker = MkTypeTracker(Boolean hasCall, OptionalPropertyName prop)
 
 /**
- * EXPERIMENTAL.
- *
  * Summary of the steps needed to track a value to a given dataflow node.
  *
  * This can be used to track objects that implement a certain API in order to
- * recognize calls to that API. Note that type-tracking does not provide a
+ * recognize calls to that API. Note that type-tracking does not by itself provide a
  * source/sink relation, that is, it may determine that a node has a given type,
  * but it won't determine where that type came from.
  *
@@ -125,12 +183,12 @@ private newtype TTypeTracker = MkTypeTracker(Boolean hasCall, OptionalPropertyNa
  */
 class TypeTracker extends TTypeTracker {
   Boolean hasCall;
-
   string prop;
 
   TypeTracker() { this = MkTypeTracker(hasCall, prop) }
 
   /** Gets the summary resulting from appending `step` to this type-tracking summary. */
+  cached
   TypeTracker append(StepSummary step) {
     step = LevelStep() and result = this
     or
@@ -156,6 +214,12 @@ class TypeTracker extends TTypeTracker {
    * Holds if this is the starting point of type tracking.
    */
   predicate start() { hasCall = false and prop = "" }
+
+  /**
+   * Holds if this is the starting point of type tracking
+   * when tracking a parameter into a call, but not out of it.
+   */
+  predicate call() { hasCall = true and prop = "" }
 
   /**
    * Holds if this is the end point of type tracking.
@@ -189,13 +253,29 @@ class TypeTracker extends TTypeTracker {
     )
   }
 
-   /**
+  /**
    * Gets the summary that corresponds to having taken a forwards
    * local, heap and/or inter-procedural step from `pred` to `succ`.
    *
    * Unlike `TypeTracker::step`, this predicate exposes all edges
    * in the flow graph, and not just the edges between `SourceNode`s.
    * It may therefore be less performant.
+   *
+   * Type tracking predicates using small steps typically take the following form:
+   * ```ql
+   * DataFlow::Node myType(DataFlow::TypeTracker t) {
+   *   t.start() and
+   *   result = < source of myType >
+   *   or
+   *   exists (DataFlow::TypeTracker t2 |
+   *     t = t2.smallstep(myType(t2), result)
+   *   )
+   * }
+   *
+   * DataFlow::Node myType() {
+   *   result = myType(DataFlow::TypeTracker::end())
+   * }
+   * ```
    */
   pragma[inline]
   TypeTracker smallstep(DataFlow::Node pred, DataFlow::Node succ) {
@@ -210,14 +290,15 @@ class TypeTracker extends TTypeTracker {
 }
 
 module TypeTracker {
+  /**
+   * Gets a valid end point of type tracking.
+   */
   TypeTracker end() { result.end() }
 }
 
 private newtype TTypeBackTracker = MkTypeBackTracker(Boolean hasReturn, OptionalPropertyName prop)
 
 /**
- * EXPERIMENTAL.
- *
  * Summary of the steps needed to back-track a use of a value to a given dataflow node.
  *
  * This can be used to track callbacks that are passed to a certian API call, and are
@@ -249,7 +330,6 @@ private newtype TTypeBackTracker = MkTypeBackTracker(Boolean hasReturn, Optional
  */
 class TypeBackTracker extends TTypeBackTracker {
   Boolean hasReturn;
-
   string prop;
 
   TypeBackTracker() { this = MkTypeBackTracker(hasReturn, prop) }
@@ -320,6 +400,22 @@ class TypeBackTracker extends TTypeBackTracker {
    * Unlike `TypeBackTracker::step`, this predicate exposes all edges
    * in the flowgraph, and not just the edges between
    * `SourceNode`s. It may therefore be less performant.
+   *
+   * Type tracking predicates using small steps typically take the following form:
+   * ```ql
+   * DataFlow::Node myType(DataFlow::TypeBackTracker t) {
+   *   t.start() and
+   *   result = < some API call >.getArgument(< n >)
+   *   or
+   *   exists (DataFlow::TypeBackTracker t2 |
+   *     t = t2.smallstep(result, myType(t2))
+   *   )
+   * }
+   *
+   * DataFlow::Node myType() {
+   *   result = myType(DataFlow::TypeBackTracker::end())
+   * }
+   * ```
    */
   pragma[inline]
   TypeBackTracker smallstep(DataFlow::Node pred, DataFlow::Node succ) {
@@ -334,5 +430,25 @@ class TypeBackTracker extends TTypeBackTracker {
 }
 
 module TypeBackTracker {
+  /**
+   * Gets a valid end point of type back-tracking.
+   */
   TypeBackTracker end() { result.end() }
+}
+
+/**
+ * A data flow edge that should be followed by type tracking.
+ *
+ * Unlike `AdditionalFlowStep`, this type of edge does not affect
+ * the local data flow graph, and is not used by data-flow configurations.
+ *
+ * Note: For performance reasons, all subclasses of this class should be part
+ * of the standard library. For query-specific steps, consider including the
+ * custom steps in the type-tracking predicate itself.
+ */
+abstract class AdditionalTypeTrackingStep extends DataFlow::Node {
+  /**
+   * Holds if type-tracking should step from `pred` to `succ`.
+   */
+  abstract predicate step(DataFlow::Node pred, DataFlow::Node succ);
 }

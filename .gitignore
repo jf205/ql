@@ -12,3 +12,8 @@
 # Visual studio temporaries, except a file used by QL4VS
 .vs/*
 !.vs/VSWorkspaceSettings.json
+
+# It's useful (though not required) to be able to unpack codeql in the ql checkout itself
+/codeql/
+.vscode/settings.json
+csharp/extractor/Semmle.Extraction.CSharp.Driver/Properties/launchSettings.json

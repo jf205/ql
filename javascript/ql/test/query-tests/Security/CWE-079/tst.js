@@ -132,7 +132,13 @@ function tst() {
       document.write(v);
   }
 
-  if (!(/\d+/.test(v)))
+  if (!(/\d+/.test(v))) // not effective - matches "123<script>...</script>"
+    return;
+
+  // NOT OK
+  document.write(v);
+
+  if (!(/^\d+$/.test(v)))
     return;
 
   // OK
@@ -284,4 +290,31 @@ function testCreateContextualFragment() {
     range.selectNode(document.getElementsByTagName("div").item(0));
     var documentFragment = range.createContextualFragment(tainted); // NOT OK
     document.body.appendChild(documentFragment);
+}
+
+function flowThroughPropertyNames() {
+    var obj = {};
+    obj[Math.random()] = window.name;
+    for (var p in obj)
+      $(p); // OK
+}
+
+function basicExceptions() {
+	try {
+		throw location;
+	} catch(e) {
+		$("body").append(e); // NOT OK
+	}
+
+	try {
+		try {
+			throw location
+		} finally {}
+	} catch(e) {
+		$("body").append(e); // NOT OK
+	}
+}
+
+function handlebarsSafeString() {
+	return new Handlebars.SafeString(location); // NOT OK!	
 }

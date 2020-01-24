@@ -13,27 +13,27 @@
  *       external/cwe/cwe-120
  *       external/cwe/cwe-122
  */
+
 import cpp
+import semmle.code.cpp.dataflow.DataFlow
+import semmle.code.cpp.models.interfaces.ArrayFunction
+import semmle.code.cpp.models.interfaces.Allocation
 
-class MallocCall extends FunctionCall
-{
-  MallocCall() {
-  	this.getTarget().hasGlobalName("malloc") or
-  	this.getTarget().hasQualifiedName("std", "malloc")
-  }
-
-  Expr getAllocatedSize() {
-    if this.getArgument(0) instanceof VariableAccess then
-      exists(LocalScopeVariable v, ControlFlowNode def |
-        definitionUsePair(v, def, this.getArgument(0)) and
-        exprDefinition(v, def, result))
-    else
-      result = this.getArgument(0)
-  }
-}
-
-predicate terminationProblem(MallocCall malloc, string msg) {
-  malloc.getAllocatedSize() instanceof StrlenCall and
+predicate terminationProblem(AllocationExpr malloc, string msg) {
+  // malloc(strlen(...))
+  exists(StrlenCall strlen | DataFlow::localExprFlow(strlen, malloc.getSizeExpr())) and
+  // flows into a null-terminated string function
+  exists(ArrayFunction af, FunctionCall fc, int arg |
+    DataFlow::localExprFlow(malloc, fc.getArgument(arg)) and
+    fc.getTarget() = af and
+    (
+      // null terminated string
+      af.hasArrayWithNullTerminator(arg)
+      or
+      // likely a null terminated string (such as `strcpy`, `strcat`)
+      af.hasArrayWithUnknownSize(arg)
+    )
+  ) and
   msg = "This allocation does not include space to null-terminate the string."
 }
 

@@ -1,4 +1,4 @@
-
+// semmle-extractor-options: /langversion:8.0
 
 using System;
 using System.Threading.Tasks;
@@ -156,6 +156,36 @@ namespace NoPia
         where TEmbeddedTypesManager : EmbeddedTypesManager<TEmbeddedTypesManager, TEmbeddedType>
         where TEmbeddedType : EmbeddedTypesManager<TEmbeddedTypesManager, TEmbeddedType>
     {
+    }
+}
+
+unsafe class ArrayTypesTest
+{
+    int*[][] field;
+}
+
+class NameofNamespace
+{
+    string s = nameof(System) + nameof(System.Threading.Tasks);
+}
+
+class UsingDiscard
+{
+    void F()
+    {
+        foreach(var _ in new IDisposable[] { })
+            using(_)
+            {
+            }
+    }
+}
+
+class TupleMatching
+{
+    (int, object) G(object o1, object o2)
+    {
+        (object, object)? pair = (o1, o2);
+        return (0, pair is var (x, y) ? x : null);
     }
 }
 

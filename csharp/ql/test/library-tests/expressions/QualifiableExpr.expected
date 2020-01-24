@@ -1,8 +1,10 @@
+| MethodAccess.cs:8:20:8:21 | access to local function M1 | MethodAccess.cs:8:20:8:21 | this access |
 | MethodAccess.cs:9:13:9:14 | access to method M2 | MethodAccess.cs:9:13:9:14 | this access |
 | MethodAccess.cs:10:13:10:19 | access to method M2 | MethodAccess.cs:10:13:10:16 | this access |
 | MethodAccess.cs:12:13:12:27 | access to method M3 | MethodAccess.cs:12:13:12:24 | access to type MethodAccess |
 | Qualifiers.cs:7:21:7:35 | call to method Instance | Qualifiers.cs:7:21:7:35 | this access |
 | Qualifiers.cs:9:22:9:42 | call to method Instance | Qualifiers.cs:9:22:9:25 | this access |
+| expressions.cs:45:20:45:20 | access to field f | expressions.cs:45:20:45:20 | this access |
 | expressions.cs:51:13:51:34 | access to field name | expressions.cs:51:13:51:29 | access to type Class |
 | expressions.cs:52:13:52:23 | call to method Foo | expressions.cs:52:13:52:17 | access to type Class |
 | expressions.cs:64:20:64:27 | access to property Length | expressions.cs:64:20:64:20 | access to parameter s |
@@ -28,6 +30,8 @@
 | expressions.cs:182:27:182:30 | access to method M3 | expressions.cs:182:27:182:27 | access to local variable c |
 | expressions.cs:189:52:189:54 | access to method F | expressions.cs:189:52:189:52 | access to type X |
 | expressions.cs:190:36:190:38 | access to method G | expressions.cs:190:36:190:36 | access to type X |
+| expressions.cs:197:25:197:37 | access to local function LocalFunction | expressions.cs:197:25:197:37 | this access |
+| expressions.cs:198:19:198:31 | access to local function LocalFunction | expressions.cs:198:19:198:31 | this access |
 | expressions.cs:233:17:233:21 | access to event Click | expressions.cs:233:17:233:21 | this access |
 | expressions.cs:234:17:234:21 | access to event Click | expressions.cs:234:17:234:21 | this access |
 | expressions.cs:239:13:239:17 | access to event Click | expressions.cs:239:13:239:17 | this access |
@@ -53,8 +57,11 @@
 | expressions.cs:355:52:355:53 | access to field p1 | expressions.cs:355:52:355:53 | this access |
 | expressions.cs:356:40:356:41 | access to field p2 | expressions.cs:356:40:356:41 | this access |
 | expressions.cs:356:52:356:53 | access to field p2 | expressions.cs:356:52:356:53 | this access |
+| expressions.cs:363:15:363:16 | access to field p1 | expressions.cs:363:15:363:16 | this access |
+| expressions.cs:364:15:364:16 | access to field p2 | expressions.cs:364:15:364:16 | this access |
 | expressions.cs:366:40:366:41 | access to field p1 | expressions.cs:366:40:366:41 | this access |
 | expressions.cs:367:40:367:41 | access to field p2 | expressions.cs:367:40:367:41 | this access |
+| expressions.cs:375:22:375:33 | access to field phoneNumbers | expressions.cs:375:22:375:33 | this access |
 | expressions.cs:377:43:377:46 | access to field name | expressions.cs:377:43:377:46 | this access |
 | expressions.cs:377:57:377:60 | access to field name | expressions.cs:377:57:377:60 | this access |
 | expressions.cs:378:57:378:68 | access to field phoneNumbers | expressions.cs:378:57:378:68 | this access |

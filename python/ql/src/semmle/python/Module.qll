@@ -9,9 +9,13 @@ class Module extends Module_, Scope, AstNode {
     override string toString() {
         result = this.getKind() + " " + this.getName()
         or
-        /* No name is defined, which means that this is not on an import path. So it must be a script */
+        /* No name is defined, which means that this module is not on an import path. So it must be a script */
         not exists(this.getName()) and not this.isPackage() and
         result = "Script " + this.getFile().getShortName()
+        or
+        /* Package missing name, so just use the path instead */
+        not exists(this.getName()) and this.isPackage() and
+        result = "Package at "  + this.getPath().getAbsolutePath()
     }
 
     /** This method will be deprecated in the next release. Please use `getEnclosingScope()` instead.
@@ -48,6 +52,13 @@ class Module extends Module_, Scope, AstNode {
         result = moduleNameFromFile(this.getPath())
     }
 
+    /** Gets the short name of the module. For example the short name of module x.y.z is 'z' */
+    string getShortName() {
+        result = this.getName().suffix(this.getPackage().getName().length()+1)
+        or
+        result = this.getName() and not exists(this.getPackage())
+    }
+
     /** Gets this module */
     override Module getEnclosingModule() {
         result = this
@@ -67,9 +78,9 @@ class Module extends Module_, Scope, AstNode {
     string getAnExport() {
         py_exports(this, result)
         or
-        exists(ModuleValue mod |
+        exists(ModuleObjectInternal mod |
             mod.getSource() = this.getEntryNode() |
-            mod.exports(result)
+            mod.(ModuleValue).exports(result)
         )
     }
 
@@ -191,6 +202,7 @@ class Module extends Module_, Scope, AstNode {
 
 }
 
+
 bindingset[name]
 private predicate legalDottedName(string name) {
     name.regexpMatch("(\\p{L}|_)(\\p{L}|\\d|_)*(\\.(\\p{L}|_)(\\p{L}|\\d|_)*)*")
@@ -206,15 +218,17 @@ private predicate legalShortName(string name) {
  */
 private predicate isPotentialSourcePackage(Folder f) {
     f.getRelativePath() != "" and
-    (
-        exists(f.getFile("__init__.py"))
-        or
-        py_flags_versioned("options.respect_init", "False", _) and major_version() = 2
-    )
+    isPotentialPackage(f)
+}
+
+private predicate isPotentialPackage(Folder f) {
+    exists(f.getFile("__init__.py"))
+    or
+    py_flags_versioned("options.respect_init", "False", _) and major_version() = 2
 }
 
 private string moduleNameFromBase(Container file) {
-    file instanceof Folder and result = file.getBaseName()
+    isPotentialPackage(file) and result = file.getBaseName()
     or
     file instanceof File and result = file.getStem()
 }
@@ -222,17 +236,16 @@ private string moduleNameFromBase(Container file) {
 string moduleNameFromFile(Container file) {
     exists(string basename |
         basename = moduleNameFromBase(file) and
-        legalShortName(basename)
-        |
+        legalShortName(basename) and
         result = moduleNameFromFile(file.getParent()) + "." + basename
-        or
-        isPotentialSourcePackage(file) and result = file.getStem() and
-        (not isPotentialSourcePackage(file.getParent()) or not legalShortName(file.getParent().getBaseName()))
-        or
-        result = file.getStem() and file.getParent() = file.getImportRoot()
-        or
-        result = file.getStem() and isStubRoot(file.getParent())
     )
+    or
+    isPotentialSourcePackage(file) and result = file.getStem() and
+    (not isPotentialSourcePackage(file.getParent()) or not legalShortName(file.getParent().getBaseName()))
+    or
+    result = file.getStem() and file.getParent() = file.getImportRoot()
+    or
+    result = file.getStem() and isStubRoot(file.getParent())
 }
 
 private predicate isStubRoot(Folder f) {
@@ -240,3 +253,30 @@ private predicate isStubRoot(Folder f) {
     f.getAbsolutePath().matches("%/data/python/stubs")
 }
 
+
+/** Holds if the Container `c` should be the preferred file or folder for
+ * the given name when performing imports.
+ * Trivially true for any container if it is the only one with its name.
+ * However, if there are several modules with the same name, then
+ * this is the module most likely to be imported under that name.
+ */
+predicate isPreferredModuleForName(Container c, string name) {
+    exists(int p |
+        p = min(int x | x = priorityForName(_, name)) and
+        p = priorityForName(c, name)
+    )
+}
+
+private int priorityForName(Container c, string name) {
+    name = moduleNameFromFile(c) and
+    (
+        // In the source
+        exists(c.getRelativePath()) and result = -1
+        or
+        // On an import path
+        exists(c.getImportRoot(result))
+        or
+        // Otherwise
+        result = 10000
+    )
+}

@@ -34,8 +34,20 @@ module Shared {
     MetacharEscapeSanitizer() {
       getMethodName() = "replace" and
       exists(RegExpConstant c |
-        c.getLiteral() = getArgument(0).asExpr() and
+        c.getLiteral() = getArgument(0).getALocalSource().asExpr() and
         c.getValue().regexpMatch("['\"&<>]")
+      )
+    }
+  }
+
+  /**
+   * A call to `encodeURI` or `encodeURIComponent`, viewed as a sanitizer for
+   * XSS vulnerabilities.
+   */
+  class UriEncodingSanitizer extends Sanitizer, DataFlow::CallNode {
+    UriEncodingSanitizer() {
+      exists(string name | this = DataFlow::globalVarRef(name).getACall() |
+        name = "encodeURI" or name = "encodeURIComponent"
       )
     }
   }
@@ -59,14 +71,14 @@ module DomBasedXss {
   class LibrarySink extends Sink, DataFlow::ValueNode {
     LibrarySink() {
       // call to a jQuery method that interprets its argument as HTML
-      exists(JQueryMethodCall call | call.interpretsArgumentAsHtml(astNode) |
+      exists(JQuery::MethodCall call | call.interpretsArgumentAsHtml(this) |
         // either the argument is always interpreted as HTML
-        not call.interpretsArgumentAsSelector(astNode)
+        not call.interpretsArgumentAsSelector(this)
         or
         // or it doesn't start with something other than `<`, and so at least
         // _may_ be interpreted as HTML
         not exists(DataFlow::Node prefix, string strval |
-          isPrefixOfJQueryHtmlString(astNode, prefix) and
+          isPrefixOfJQueryHtmlString(this, prefix) and
           strval = prefix.getStringValue() and
           not strval.regexpMatch("\\s*<.*")
         ) and
@@ -83,6 +95,10 @@ module DomBasedXss {
         mcn.getMethodName() = m and
         this = mcn.getArgument(1)
       )
+      or
+      this = any(Typeahead::TypeaheadSuggestionFunction f).getAReturn()
+      or
+      this = any(Handlebars::SafeString s).getAnArgument()
     }
   }
 
@@ -90,9 +106,9 @@ module DomBasedXss {
    * Holds if `prefix` is a prefix of `htmlString`, which may be intepreted as
    * HTML by a jQuery method.
    */
-  private predicate isPrefixOfJQueryHtmlString(Expr htmlString, DataFlow::Node prefix) {
-    any(JQueryMethodCall call).interpretsArgumentAsHtml(htmlString) and
-    prefix = htmlString.flow()
+  private predicate isPrefixOfJQueryHtmlString(DataFlow::Node htmlString, DataFlow::Node prefix) {
+    any(JQuery::MethodCall call).interpretsArgumentAsHtml(htmlString) and
+    prefix = htmlString
     or
     exists(DataFlow::Node pred | isPrefixOfJQueryHtmlString(htmlString, pred) |
       prefix = StringConcatenation::getFirstOperand(pred)
@@ -251,6 +267,8 @@ module DomBasedXss {
    * so any such replacement stops taint propagation.
    */
   private class MetacharEscapeSanitizer extends Sanitizer, Shared::MetacharEscapeSanitizer { }
+
+  private class UriEncodingSanitizer extends Sanitizer, Shared::UriEncodingSanitizer { }
 }
 
 /** Provides classes and predicates for the reflected XSS query. */
@@ -271,16 +289,19 @@ module ReflectedXss {
    * a content type that does not (case-insensitively) contain the string "html". This
    * is to prevent us from flagging plain-text or JSON responses as vulnerable.
    */
-  private class HttpResponseSink extends Sink {
-    HttpResponseSink() {
-      exists(HTTP::ResponseSendArgument sendarg | sendarg = asExpr() |
-        forall(HTTP::HeaderDefinition hd |
-          hd = sendarg.getRouteHandler().getAResponseHeader("content-type")
-        |
-          exists(string tp | hd.defines("content-type", tp) | tp.toLowerCase().matches("%html%"))
-        )
-      )
-    }
+  private class HttpResponseSink extends Sink, DataFlow::ValueNode {
+    override HTTP::ResponseSendArgument astNode;
+
+    HttpResponseSink() { not nonHtmlContentType(astNode.getRouteHandler()) }
+  }
+
+  /**
+   * Holds if `h` may send a response with a content type other than HTML.
+   */
+  private predicate nonHtmlContentType(HTTP::RouteHandler h) {
+    exists(HTTP::HeaderDefinition hd | hd = h.getAResponseHeader("content-type") |
+      not exists(string tp | hd.defines("content-type", tp) | tp.regexpMatch("(?i).*html.*"))
+    )
   }
 
   /**
@@ -291,6 +312,8 @@ module ReflectedXss {
    * so any such replacement stops taint propagation.
    */
   private class MetacharEscapeSanitizer extends Sanitizer, Shared::MetacharEscapeSanitizer { }
+
+  private class UriEncodingSanitizer extends Sanitizer, Shared::UriEncodingSanitizer { }
 }
 
 /** Provides classes and predicates for the stored XSS query. */
@@ -317,4 +340,6 @@ module StoredXss {
    * so any such replacement stops taint propagation.
    */
   private class MetacharEscapeSanitizer extends Sanitizer, Shared::MetacharEscapeSanitizer { }
+
+  private class UriEncodingSanitizer extends Sanitizer, Shared::UriEncodingSanitizer { }
 }

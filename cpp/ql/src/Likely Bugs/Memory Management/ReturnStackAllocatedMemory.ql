@@ -32,8 +32,8 @@ predicate conservativeDataFlowStep(DataFlow::Node n1, DataFlow::Node n2) {
  * data flow through such expressions.
  */
 predicate hasNontrivialConversion(Expr e) {
-  e instanceof Conversion and not
-  (
+  e instanceof Conversion and
+  not (
     e instanceof Cast
     or
     e instanceof ParenthesisExpr
@@ -42,9 +42,8 @@ predicate hasNontrivialConversion(Expr e) {
   hasNontrivialConversion(e.getConversion())
 }
 
-from LocalScopeVariable var, VariableAccess va, ReturnStmt r
+from StackVariable var, VariableAccess va, ReturnStmt r
 where
-  not var.isStatic() and
   not var.getUnspecifiedType() instanceof ReferenceType and
   not r.isFromUninstantiatedTemplate(_) and
   va = var.getAnAccess() and
@@ -60,10 +59,7 @@ where
     exists(Expr pointerToLocal |
       variableAddressEscapesTree(va, pointerToLocal.getFullyConverted()) and
       not hasNontrivialConversion(pointerToLocal) and
-      conservativeDataFlowStep+(
-        DataFlow::exprNode(pointerToLocal),
-        DataFlow::exprNode(r.getExpr())
-      )
+      conservativeDataFlowStep+(DataFlow::exprNode(pointerToLocal), DataFlow::exprNode(r.getExpr()))
     )
   )
 select r, "May return stack-allocated memory from $@.", va, va.toString()

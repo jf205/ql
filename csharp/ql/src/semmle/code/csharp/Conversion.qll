@@ -15,6 +15,61 @@ import Type
 private import semmle.code.csharp.frameworks.System
 private import semmle.code.csharp.frameworks.system.collections.Generic
 
+cached
+private module Cached {
+  /**
+   * INTERNAL: Do not use.
+   *
+   * Holds if there exists an implicit conversion from `fromType` to `toType`.
+   *
+   * 6.1: Implicit type conversions.
+   *
+   * The following conversions are included:
+   *
+   * - Identity conversions
+   * - Implicit numeric conversions
+   * - Implicit nullable conversions
+   * - Implicit reference conversions
+   * - Boxing conversions
+   */
+  cached
+  predicate implicitConversionRestricted(Type fromType, Type toType) {
+    convIdentity(fromType, toType)
+    or
+    convNumeric(fromType, toType)
+    or
+    convNullableType(fromType, toType)
+    or
+    convRefTypeNonNull(fromType, toType)
+    or
+    convBoxing(fromType, toType)
+  }
+
+  /**
+   * INTERNAL: Do not use.
+   *
+   * Holds if there is a constant expression conversion from `fromType` to `toType`.
+   *
+   * 6.1.9: Implicit constant expression conversions.
+   */
+  cached
+  predicate convConstantExpr(SignedIntegralConstantExpr e, SimpleType toType) {
+    convConstantIntExpr(e, toType)
+    or
+    convConstantLongExpr(e) and toType instanceof ULongType
+  }
+}
+
+import Cached
+
+private predicate implicitConversionNonNull(Type fromType, Type toType) {
+  implicitConversionRestricted(fromType, toType)
+  or
+  convConversionOperator(fromType, toType)
+  or
+  fromType instanceof DynamicType // 6.1.8
+}
+
 /**
  * INTERNAL: Do not use.
  *
@@ -31,34 +86,35 @@ private import semmle.code.csharp.frameworks.system.collections.Generic
  * - Boxing conversions
  * - User-defined implicit conversions
  */
-cached
+pragma[nomagic]
 predicate implicitConversion(Type fromType, Type toType) {
   implicitConversionNonNull(fromType, toType)
   or
   defaultNullConversion(fromType, toType)
 }
 
-private predicate implicitConversionNonNull(Type fromType, Type toType) {
-  convIdentity(fromType, toType)
-  or
-  convNumeric(fromType, toType)
-  or
-  convNullableType(fromType, toType)
-  or
-  convRefTypeNonNull(fromType, toType)
-  or
-  convBoxing(fromType, toType)
-  or
-  convConversionOperator(fromType, toType)
-  or
-  fromType instanceof DynamicType // 6.1.8
+/**
+ * A generic type. This includes both constructed generic types and unbound
+ * generic types (which correspond to constructed generic types where the
+ * type arguments equal the type parameters).
+ */
+private class GenericType extends Generic, Type {
+  /** Gets the `i`th type argument. */
+  Type getTypeArgument(int i) { result = this.getChild(i) }
+
+  /** Gets the unbound generic type. */
+  UnboundGenericType getUnboundGeneric() {
+    result = this.(ConstructedType).getUnboundGeneric()
+    or
+    result = this
+  }
 }
 
-private Type getTypeArgument(UnboundGenericType ugt, ConstructedType ct, int i, TypeParameter tp) {
-  ct.getUnboundGeneric() = ugt and
+private Type getTypeArgument(UnboundGenericType ugt, GenericType gt, int i, TypeParameter tp) {
+  gt.getUnboundGeneric() = ugt and
   not ugt instanceof AnonymousClass and
   tp = ugt.getTypeParameter(i) and
-  result = ct.getTypeArgument(i)
+  result = gt.getTypeArgument(i)
 }
 
 /** A type that is an element type of an array type. */
@@ -68,7 +124,7 @@ private class ArrayElementType extends Type {
 
 /** A type that is an argument in a constructed type. */
 private class TypeArgument extends Type {
-  TypeArgument() { this = any(ConstructedType ct).getATypeArgument() }
+  TypeArgument() { this = any(GenericType gt).getTypeArgument(_) }
 }
 
 /**
@@ -95,8 +151,7 @@ private module Identity {
 
   private class IdentityConvertibleArrayType extends IdentityConvertibleType, ArrayType { }
 
-  private class IdentityConvertibleConstructedType extends IdentityConvertibleType, ConstructedType {
-  }
+  private class IdentityConvertibleGenericType extends IdentityConvertibleType, GenericType { }
 
   /**
    * A type is (strictly) identity convertible if it contains at least one `object`
@@ -109,7 +164,7 @@ private module Identity {
     or
     isIdentityConvertible(t.(ArrayType).getElementType())
     or
-    isIdentityConvertible(t.(ConstructedType).getATypeArgument())
+    isIdentityConvertible(t.(GenericType).getTypeArgument(_))
   }
 
   predicate convIdentityStrict(IdentityConvertibleType fromType, IdentityConvertibleType toType) {
@@ -119,7 +174,7 @@ private module Identity {
     or
     convIdentityStrictArrayType(fromType, toType)
     or
-    convIdentityStrictConstructedType(fromType, toType)
+    convIdentityStrictGenericType(fromType, toType)
   }
 
   private predicate convIdentityObjectDynamic(ObjectType fromType, DynamicType toType) { any() }
@@ -151,7 +206,7 @@ private module Identity {
    */
   private int getTypeArgumentCount(UnboundGenericType ugt, int i) {
     result = strictcount(Type arg |
-        exists(IdentityConvertibleConstructedType ct | ct.getUnboundGeneric() = ugt |
+        exists(IdentityConvertibleGenericType ct | ct.getUnboundGeneric() = ugt |
           arg = ct.getTypeArgument(i)
         )
       )
@@ -162,9 +217,7 @@ private module Identity {
   }
 
   /** Gets the 'i'th type argument, ranked by size, of constructed type `t`. */
-  private Type getTypeArgumentRanked(
-    UnboundGenericType ugt, IdentityConvertibleConstructedType t, int i
-  ) {
+  private Type getTypeArgumentRanked(UnboundGenericType ugt, IdentityConvertibleGenericType t, int i) {
     result = getTypeArgument(ugt, t, rnk(ugt, i), _)
   }
 
@@ -207,8 +260,8 @@ private module Identity {
 
   pragma[nomagic]
   private predicate convIdentitySingle0(
-    UnboundGenericType ugt, IdentityConvertibleConstructedType toType,
-    TypeArgument fromTypeArgument, TypeArgument toTypeArgument
+    UnboundGenericType ugt, IdentityConvertibleGenericType toType, TypeArgument fromTypeArgument,
+    TypeArgument toTypeArgument
   ) {
     convTypeArgumentsSameUnbound(ugt, fromTypeArgument, toTypeArgument, 0) and
     toTypeArgument = getTypeArgumentRanked(ugt, toType, 0) and
@@ -220,8 +273,8 @@ private module Identity {
    * convertible, and the number of type arguments is 1.
    */
   predicate convIdentitySingle(
-    UnboundGenericType ugt, IdentityConvertibleConstructedType fromType,
-    IdentityConvertibleConstructedType toType
+    UnboundGenericType ugt, IdentityConvertibleGenericType fromType,
+    IdentityConvertibleGenericType toType
   ) {
     exists(TypeArgument fromTypeArgument, TypeArgument toTypeArgument |
       convIdentitySingle0(ugt, toType, fromTypeArgument, toTypeArgument)
@@ -232,8 +285,8 @@ private module Identity {
 
   pragma[nomagic]
   private predicate convIdentityMultiple01Aux0(
-    UnboundGenericType ugt, IdentityConvertibleConstructedType toType,
-    TypeArgument fromTypeArgument0, TypeArgument toTypeArgument0, TypeArgument toTypeArgument1
+    UnboundGenericType ugt, IdentityConvertibleGenericType toType, TypeArgument fromTypeArgument0,
+    TypeArgument toTypeArgument0, TypeArgument toTypeArgument1
   ) {
     convTypeArgumentsSameUnbound(ugt, fromTypeArgument0, toTypeArgument0, 0) and
     toTypeArgument0 = getTypeArgumentRanked(ugt, toType, 0) and
@@ -242,8 +295,8 @@ private module Identity {
 
   pragma[nomagic]
   private predicate convIdentityMultiple01Aux1(
-    UnboundGenericType ugt, IdentityConvertibleConstructedType fromType,
-    TypeArgument fromTypeArgument0, TypeArgument fromTypeArgument1, TypeArgument toTypeArgument1
+    UnboundGenericType ugt, IdentityConvertibleGenericType fromType, TypeArgument fromTypeArgument0,
+    TypeArgument fromTypeArgument1, TypeArgument toTypeArgument1
   ) {
     convTypeArgumentsSameUnbound(ugt, fromTypeArgument1, toTypeArgument1, 1) and
     fromTypeArgument0 = getTypeArgumentRanked(ugt, fromType, 0) and
@@ -255,8 +308,8 @@ private module Identity {
    * are identity convertible.
    */
   private predicate convIdentityMultiple01(
-    UnboundGenericType ugt, IdentityConvertibleConstructedType fromType,
-    IdentityConvertibleConstructedType toType
+    UnboundGenericType ugt, IdentityConvertibleGenericType fromType,
+    IdentityConvertibleGenericType toType
   ) {
     exists(
       Type fromTypeArgument0, Type toTypeArgument0, Type fromTypeArgument1, Type toTypeArgument1
@@ -270,7 +323,7 @@ private module Identity {
 
   pragma[nomagic]
   private predicate convIdentityMultiple2Aux(
-    UnboundGenericType ugt, IdentityConvertibleConstructedType toType, int i,
+    UnboundGenericType ugt, IdentityConvertibleGenericType toType, int i,
     TypeArgument fromTypeArgument, TypeArgument toTypeArgument
   ) {
     convTypeArgumentsSameUnbound(ugt, fromTypeArgument, toTypeArgument, i) and
@@ -279,8 +332,8 @@ private module Identity {
   }
 
   private predicate convIdentityMultiple2(
-    UnboundGenericType ugt, IdentityConvertibleConstructedType fromType,
-    IdentityConvertibleConstructedType toType, int i
+    UnboundGenericType ugt, IdentityConvertibleGenericType fromType,
+    IdentityConvertibleGenericType toType, int i
   ) {
     exists(TypeArgument fromTypeArgument, TypeArgument toTypeArgument |
       convIdentityMultiple2Aux(ugt, toType, i, fromTypeArgument, toTypeArgument)
@@ -295,8 +348,8 @@ private module Identity {
    */
   pragma[nomagic]
   predicate convIdentityMultiple(
-    UnboundGenericType ugt, IdentityConvertibleConstructedType fromType,
-    IdentityConvertibleConstructedType toType, int i
+    UnboundGenericType ugt, IdentityConvertibleGenericType fromType,
+    IdentityConvertibleGenericType toType, int i
   ) {
     convIdentityMultiple01(ugt, fromType, toType) and i = 1
     or
@@ -304,8 +357,8 @@ private module Identity {
     convIdentityMultiple2(ugt, fromType, toType, i)
   }
 
-  private predicate convIdentityStrictConstructedType(
-    IdentityConvertibleConstructedType fromType, IdentityConvertibleConstructedType toType
+  private predicate convIdentityStrictGenericType(
+    IdentityConvertibleGenericType fromType, IdentityConvertibleGenericType toType
   ) {
     // Semantically equivalent with
     // ```
@@ -463,7 +516,7 @@ predicate convNullableType(ValueOrRefType fromType, NullableType toType) {
 // This is a deliberate, small Cartesian product, so we have manually lifted it to force the
 // evaluator to evaluate it in its entirety, rather than trying to optimize it in context.
 pragma[noinline]
-private predicate defaultNullConversion(Type fromType, Type toType) {
+predicate defaultNullConversion(Type fromType, Type toType) {
   fromType instanceof NullType and convNullType(toType)
 }
 
@@ -598,19 +651,6 @@ private predicate convBoxingValueType(ValueType fromType, Type toType) {
   toType = fromType.getABaseInterface+()
 }
 
-/**
- * INTERNAL: Do not use.
- *
- * Holds if there is a constant expression conversion from `fromType` to `toType`.
- *
- * 6.1.9: Implicit constant expression conversions.
- */
-predicate convConstantExpr(SignedIntegralConstantExpr e, SimpleType toType) {
-  convConstantIntExpr(e, toType)
-  or
-  convConstantLongExpr(e) and toType instanceof ULongType
-}
-
 private class SignedIntegralConstantExpr extends Expr {
   SignedIntegralConstantExpr() {
     this.getType() instanceof SignedIntegralType and
@@ -683,9 +723,9 @@ private Class effectiveBaseClassCandidate(TypeParameter tp) {
   exists(TypeParameterConstraints tpc | tpc = tp.getConstraints() |
     tpc.hasValueTypeConstraint() and result instanceof SystemValueTypeClass
     or
-    result = tpc.getClassConstraint()
+    result = tpc.getATypeConstraint()
     or
-    result = effectiveBaseClassCandidate(tpc.getATypeParameterConstraint())
+    result = effectiveBaseClassCandidate(tpc.getATypeConstraint())
     or
     tpc.hasRefTypeConstraint() and result instanceof ObjectType
   )
@@ -694,7 +734,7 @@ private Class effectiveBaseClassCandidate(TypeParameter tp) {
 /** 10.1.5: Whether type parameter `tp` has primary constraints. */
 private predicate hasPrimaryConstraints(TypeParameter tp) {
   exists(TypeParameterConstraints tpc | tpc = tp.getConstraints() |
-    exists(tpc.getClassConstraint())
+    tpc.getATypeConstraint() instanceof Class
     or
     tpc.hasRefTypeConstraint()
     or
@@ -705,14 +745,14 @@ private predicate hasPrimaryConstraints(TypeParameter tp) {
 /** 10.1.5: The effective interface set of a type parameter `tp` */
 private Interface effectiveInterfaceSet(TypeParameter tp) {
   exists(TypeParameterConstraints tpc | tpc = tp.getConstraints() |
-    result = tpc.getAnInterfaceConstraint()
+    result = tpc.getATypeConstraint()
     or
-    result = effectiveInterfaceSet(tpc.getATypeParameterConstraint())
+    result = effectiveInterfaceSet(tpc.getATypeConstraint())
   )
 }
 
 private TypeParameter getATypeParameterFromConstraints(TypeParameter tp) {
-  result = tp.getConstraints().getATypeParameterConstraint()
+  result = tp.getConstraints().getATypeConstraint()
 }
 
 /**
@@ -730,7 +770,7 @@ predicate convConversionOperator(Type fromType, Type toType) {
 }
 
 /** 13.1.3.2: Variance conversion. */
-private predicate convVariance(ConstructedType fromType, ConstructedType toType) {
+private predicate convVariance(GenericType fromType, GenericType toType) {
   // Semantically equivalent with
   // ```
   // ugt = fromType.getUnboundGeneric()
@@ -758,34 +798,14 @@ private predicate convVariance(ConstructedType fromType, ConstructedType toType)
 }
 
 private module Variance {
-  /**
-   * Holds if constructed type `ct` is potentially variance convertible to
-   * or from another constructed type, as a result of the `i`th type
-   * argument being potentially convertible.
-   */
-  private predicate isVarianceConvertible(ConstructedType ct, int i) {
-    exists(TypeParameter tp, Type t |
-      tp = ct.getUnboundGeneric().getTypeParameter(i) and
-      t = ct.getTypeArgument(i)
-    |
-      // Anything that is not a type parameter is potentially convertible
-      // to/from another type; if the `i`th type parameter is invariant,
-      // `t` must be strictly identity convertible
-      not t instanceof TypeParameter and
-      (tp.isIn() or tp.isOut() or Identity::convIdentityStrict(t, _))
-      or
-      exists(TypeParameter s | s = t |
-        // A type parameter with implicit reference conversion
-        exists(convTypeParameterBase(s)) and s.isRefType() and tp.isOut()
+  private class VarianceConvertibleGenericType extends GenericType {
+    VarianceConvertibleGenericType() {
+      exists(TypeParameter tp | tp = this.getUnboundGeneric().getATypeParameter() |
+        tp.isIn()
         or
-        // A type parameter convertible from another type parameter
-        exists(TypeParameter u | s = convTypeParameterBase(u) and u.isRefType() and tp.isIn())
+        tp.isOut()
       )
-    )
-  }
-
-  private class VarianceConvertibleConstructedType extends ConstructedType {
-    VarianceConvertibleConstructedType() { isVarianceConvertible(this, _) }
+    }
   }
 
   /**
@@ -794,8 +814,8 @@ private module Variance {
    */
   private int getTypeArgumentCount(UnboundGenericType ugt, int i) {
     result = strictcount(Type arg |
-        exists(VarianceConvertibleConstructedType ct | ct.getUnboundGeneric() = ugt |
-          arg = ct.getTypeArgument(i)
+        exists(VarianceConvertibleGenericType gt | gt.getUnboundGeneric() = ugt |
+          arg = gt.getTypeArgument(i)
         )
       )
   }
@@ -806,7 +826,7 @@ private module Variance {
 
   /** Gets the 'i'th type argument, ranked by size, of constructed type `t`. */
   private Type getTypeArgumentRanked(
-    UnboundGenericType ugt, VarianceConvertibleConstructedType t, int i, TypeParameter tp
+    UnboundGenericType ugt, VarianceConvertibleGenericType t, int i, TypeParameter tp
   ) {
     result = getTypeArgument(ugt, t, rnk(ugt, i), tp)
   }
@@ -889,8 +909,8 @@ private module Variance {
 
   pragma[nomagic]
   private predicate convVarianceSingle0(
-    UnboundGenericType ugt, VarianceConvertibleConstructedType toType,
-    TypeArgument fromTypeArgument, TypeArgument toTypeArgument
+    UnboundGenericType ugt, VarianceConvertibleGenericType toType, TypeArgument fromTypeArgument,
+    TypeArgument toTypeArgument
   ) {
     convTypeArgumentsSameUnbound(ugt, fromTypeArgument, toTypeArgument, 0) and
     toTypeArgument = getTypeArgumentRanked(ugt, toType, 0, _) and
@@ -902,8 +922,8 @@ private module Variance {
    * convertible, and the number of type arguments is 1.
    */
   predicate convVarianceSingle(
-    UnboundGenericType ugt, VarianceConvertibleConstructedType fromType,
-    VarianceConvertibleConstructedType toType
+    UnboundGenericType ugt, VarianceConvertibleGenericType fromType,
+    VarianceConvertibleGenericType toType
   ) {
     exists(TypeArgument fromTypeArgument, TypeArgument toTypeArgument |
       convVarianceSingle0(ugt, toType, fromTypeArgument, toTypeArgument)
@@ -914,8 +934,8 @@ private module Variance {
 
   pragma[nomagic]
   private predicate convVarianceMultiple01Aux0(
-    UnboundGenericType ugt, VarianceConvertibleConstructedType toType,
-    TypeArgument fromTypeArgument0, TypeArgument toTypeArgument0, TypeArgument toTypeArgument1
+    UnboundGenericType ugt, VarianceConvertibleGenericType toType, TypeArgument fromTypeArgument0,
+    TypeArgument toTypeArgument0, TypeArgument toTypeArgument1
   ) {
     convTypeArgumentsSameUnbound(ugt, fromTypeArgument0, toTypeArgument0, 0) and
     toTypeArgument0 = getTypeArgumentRanked(ugt, toType, 0, _) and
@@ -924,8 +944,8 @@ private module Variance {
 
   pragma[nomagic]
   private predicate convVarianceMultiple01Aux1(
-    UnboundGenericType ugt, VarianceConvertibleConstructedType fromType,
-    TypeArgument fromTypeArgument0, TypeArgument fromTypeArgument1, TypeArgument toTypeArgument1
+    UnboundGenericType ugt, VarianceConvertibleGenericType fromType, TypeArgument fromTypeArgument0,
+    TypeArgument fromTypeArgument1, TypeArgument toTypeArgument1
   ) {
     convTypeArgumentsSameUnbound(ugt, fromTypeArgument1, toTypeArgument1, 1) and
     fromTypeArgument0 = getTypeArgumentRanked(ugt, fromType, 0, _) and
@@ -937,8 +957,8 @@ private module Variance {
    * are variance convertible.
    */
   private predicate convVarianceMultiple01(
-    UnboundGenericType ugt, VarianceConvertibleConstructedType fromType,
-    VarianceConvertibleConstructedType toType
+    UnboundGenericType ugt, VarianceConvertibleGenericType fromType,
+    VarianceConvertibleGenericType toType
   ) {
     exists(
       TypeArgument fromTypeArgument0, TypeArgument toTypeArgument0, TypeArgument fromTypeArgument1,
@@ -953,7 +973,7 @@ private module Variance {
 
   pragma[nomagic]
   private predicate convVarianceMultiple2Aux(
-    UnboundGenericType ugt, VarianceConvertibleConstructedType toType, int i,
+    UnboundGenericType ugt, VarianceConvertibleGenericType toType, int i,
     TypeArgument fromTypeArgument, TypeArgument toTypeArgument
   ) {
     convTypeArgumentsSameUnbound(ugt, fromTypeArgument, toTypeArgument, i) and
@@ -962,8 +982,8 @@ private module Variance {
   }
 
   private predicate convVarianceMultiple2(
-    UnboundGenericType ugt, VarianceConvertibleConstructedType fromType,
-    VarianceConvertibleConstructedType toType, int i
+    UnboundGenericType ugt, VarianceConvertibleGenericType fromType,
+    VarianceConvertibleGenericType toType, int i
   ) {
     exists(TypeArgument fromTypeArgument, TypeArgument toTypeArgument |
       convVarianceMultiple2Aux(ugt, toType, i, fromTypeArgument, toTypeArgument)
@@ -978,8 +998,8 @@ private module Variance {
    */
   pragma[nomagic]
   predicate convVarianceMultiple(
-    UnboundGenericType ugt, VarianceConvertibleConstructedType fromType,
-    VarianceConvertibleConstructedType toType, int i
+    UnboundGenericType ugt, VarianceConvertibleGenericType fromType,
+    VarianceConvertibleGenericType toType, int i
   ) {
     convVarianceMultiple01(ugt, fromType, toType) and i = 1
     or

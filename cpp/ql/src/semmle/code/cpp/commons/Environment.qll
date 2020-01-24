@@ -8,9 +8,7 @@ import cpp
  * An expression that reads from an environment variable.
  */
 class EnvironmentRead extends Expr {
-  EnvironmentRead() {
-    readsEnvironment(this, _)
-  }
+  EnvironmentRead() { readsEnvironment(this, _) }
 
   /**
    * The name of the environment variable.
@@ -24,15 +22,14 @@ class EnvironmentRead extends Expr {
    * A very short description of the source, suitable for use in
    * an error message.
    */
-  string getSourceDescription() {
-    readsEnvironment(this, result)
-  }
+  string getSourceDescription() { readsEnvironment(this, result) }
 }
 
 private predicate readsEnvironment(Expr read, string sourceDescription) {
   exists(FunctionCall call, string name |
     read = call and
-    call.getTarget().hasGlobalName(name) and
+    call.getTarget().hasGlobalOrStdName(name) and
     (name = "getenv" or name = "secure_getenv" or name = "_wgetenv") and
-    sourceDescription = name)
+    sourceDescription = name
+  )
 }

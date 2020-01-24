@@ -22,11 +22,14 @@ private import semmle.code.csharp.metrics.Complexity
 class Callable extends DotNet::Callable, Parameterizable, ExprOrStmtParent, @callable {
   override Type getReturnType() { none() }
 
-  /** Holds if this callable returns a `ref`. */
-  predicate returnsRef() { ref_returns(this) }
+  /** Gets the annotated return type of this callable. */
+  final AnnotatedType getAnnotatedReturnType() { result.appliesTo(this) }
 
-  /** Holds if this callable returns a `ref readonly`. */
-  predicate returnsRefReadonly() { ref_readonly_returns(this) }
+  /** DEPRECATED: Use `getAnnotatedReturnType().isRef()` instead. */
+  deprecated predicate returnsRef() { this.getAnnotatedReturnType().isRef() }
+
+  /** DEPRECATED: Use `getAnnotatedReturnType().isReadonlyRef()` instead. */
+  deprecated predicate returnsRefReadonly() { this.getAnnotatedReturnType().isReadonlyRef() }
 
   override Callable getSourceDeclaration() { result = Parameterizable.super.getSourceDeclaration() }
 
@@ -202,7 +205,8 @@ class Callable extends DotNet::Callable, Parameterizable, ExprOrStmtParent, @cal
   override predicate canReturn(DotNet::Expr e) {
     exists(ReturnStmt ret | ret.getEnclosingCallable() = this | e = ret.getExpr())
     or
-    e = getExpressionBody()
+    e = this.getExpressionBody() and
+    not this.getReturnType() instanceof VoidType
   }
 
   /** Holds if this callable can yield return the expression `e`. */

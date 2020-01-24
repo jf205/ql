@@ -19,6 +19,7 @@
  */
 
 import javascript
+private import internal.CallGraphs
 
 module DataFlow {
   cached
@@ -35,15 +36,14 @@ module DataFlow {
       (kind = "call" or kind = "apply")
     } or
     TThisNode(StmtContainer f) { f.(Function).getThisBinder() = f or f instanceof TopLevel } or
-    TUnusedParameterNode(SimpleParameter p) {
-      not exists(SSA::definition(p))
-    } or
+    TUnusedParameterNode(SimpleParameter p) { not exists(SSA::definition(p)) } or
     TDestructuredModuleImportNode(ImportDeclaration decl) {
       exists(decl.getASpecifier().getImportedName())
     } or
     THtmlAttributeNode(HTML::Attribute attr) or
     TExceptionalFunctionReturnNode(Function f) or
-    TExceptionalInvocationReturnNode(InvokeExpr e)
+    TExceptionalInvocationReturnNode(InvokeExpr e) or
+    TGlobalAccessPathRoot()
 
   /**
    * A node in the data flow graph.
@@ -85,6 +85,18 @@ module DataFlow {
     /** Gets the expression corresponding to this data flow node, if any. */
     Expr asExpr() { this = TValueNode(result) }
 
+    /**
+     * Gets the expression enclosing this data flow node. 
+     * In most cases the result is the same as `asExpr()`, however this method 
+     * additionally the `InvokeExpr` corresponding to reflective calls, and the `Parameter` 
+     * for a `DataFlow::ParameterNode`. 
+     */
+    Expr getEnclosingExpr() {
+      result = asExpr() or
+      this = DataFlow::reflectiveCallNode(result) or
+      result = this.(ParameterNode).getParameter()
+    }
+
     /** Gets the AST node corresponding to this data flow node, if any. */
     ASTNode getAstNode() { none() }
 
@@ -118,8 +130,23 @@ module DataFlow {
     int getIntValue() { result = asExpr().getIntValue() }
 
     /** Gets a function value that may reach this node. */
-    FunctionNode getAFunctionValue() {
-      result.getAstNode() = analyze().getAValue().(AbstractCallable).getFunction()
+    final FunctionNode getAFunctionValue() {
+      CallGraph::getAFunctionReference(result, 0).flowsTo(this)
+    }
+
+    /** Gets a function value that may reach this node with the given `imprecision` level. */
+    final FunctionNode getAFunctionValue(int imprecision) {
+      CallGraph::getAFunctionReference(result, imprecision).flowsTo(this)
+    }
+
+    /**
+     * Gets a function value that may reach this node,
+     * possibly derived from a partial function invocation.
+     */
+    final FunctionNode getABoundFunctionValue(int boundArgs) {
+      result = getAFunctionValue() and boundArgs = 0
+      or
+      CallGraph::getABoundFunctionReference(result, boundArgs).flowsTo(this)
     }
 
     /**
@@ -161,11 +188,108 @@ module DataFlow {
 
     /** Gets a textual representation of this element. */
     string toString() { none() }
+
+    /**
+     * Gets the immediate predecessor of this node, if any.
+     *
+     * A node with an immediate predecessor can usually only have the value that flows
+     * into its from its immediate predecessor.
+     */
+    cached
+    DataFlow::Node getImmediatePredecessor() {
+      lvalueFlowStep(result, this) and
+      not lvalueDefaultFlowStep(_, this)
+      or
+      immediateFlowStep(result, this)
+      or
+      // Refinement of variable -> original definition of variable
+      exists(SsaRefinementNode refinement |
+        this = TSsaDefNode(refinement) and
+        result = TSsaDefNode(refinement.getAnInput())
+      )
+      or
+      exists(SsaPhiNode phi |
+        this = TSsaDefNode(phi) and
+        result = TSsaDefNode(phi.getRephinedVariable())
+      )
+      or
+      // IIFE call -> return value of IIFE
+      exists(Function fun |
+        localCall(this.asExpr(), fun) and
+        result = fun.getAReturnedExpr().flow() and
+        strictcount(fun.getAReturnedExpr()) = 1 and
+        not fun.getExit().isJoin() // can only reach exit by the return statement
+      )
+    }
+
+    /**
+     * Gets the static type of this node as determined by the TypeScript type system.
+     */
+    private Type getType() {
+      exists(AST::ValueNode node |
+        this = TValueNode(node) and
+        ast_node_type(node, result)
+      )
+      or
+      exists(BindingPattern pattern |
+        this = lvalueNode(pattern) and
+        ast_node_type(pattern, result)
+      )
+      or
+      exists(MethodDefinition def |
+        this = TThisNode(def.getInit()) and
+        ast_node_type(def.getDeclaringClass(), result)
+      )
+    }
+
+    /**
+     * Gets the type annotation describing the type of this node,
+     * provided that a static type could not be found.
+     *
+     * Doesn't take field types and function return types into account.
+     */
+    private JSDocTypeExpr getFallbackTypeAnnotation() {
+      exists(BindingPattern pattern |
+        this = lvalueNode(pattern) and
+        not ast_node_type(pattern, _) and
+        result = pattern.getTypeAnnotation()
+      )
+      or
+      result = getAPredecessor().getFallbackTypeAnnotation()
+    }
+
+    /**
+     * Holds if this node is annotated with the given named type,
+     * or is declared as a subtype thereof, or is a union or intersection containing such a type.
+     */
+    predicate hasUnderlyingType(string globalName) {
+      getType().hasUnderlyingType(globalName)
+      or
+      getFallbackTypeAnnotation().getAnUnderlyingType().hasQualifiedName(globalName)
+    }
+
+    /**
+     * Holds if this node is annotated with the given named type,
+     * or is declared as a subtype thereof, or is a union or intersection containing such a type.
+     */
+    predicate hasUnderlyingType(string moduleName, string typeName) {
+      getType().hasUnderlyingType(moduleName, typeName)
+      or
+      getFallbackTypeAnnotation().getAnUnderlyingType().hasQualifiedName(moduleName, typeName)
+    }
   }
 
   /**
    * An expression or a declaration of a function, class, namespace or enum,
    * viewed as a node in the data flow graph.
+   *
+   * Examples:
+   * ```js
+   * x + y
+   * Math.abs(x)
+   * class C {}
+   * function f(x, y) {}
+   * ```
    */
   class ValueNode extends Node, TValueNode {
     AST::ValueNode astNode;
@@ -245,7 +369,6 @@ module DataFlow {
    */
   private class RestPatternNode extends Node, TRestPatternNode {
     DestructuringPattern pattern;
-
     Expr rest;
 
     RestPatternNode() { this = TRestPatternNode(pattern, rest) }
@@ -291,7 +414,6 @@ module DataFlow {
    */
   private class ElementPatternNode extends Node, TElementPatternNode {
     ArrayPattern pattern;
-
     Expr elt;
 
     ElementPatternNode() { this = TElementPatternNode(pattern, elt) }
@@ -319,7 +441,6 @@ module DataFlow {
    */
   private class ElementNode extends Node, TElementNode {
     ArrayExpr arr;
-
     Expr elt;
 
     ElementNode() { this = TElementNode(arr, elt) }
@@ -343,7 +464,6 @@ module DataFlow {
    */
   private class ReflectiveCallNode extends Node, TReflectiveCallNode {
     MethodCallExpr call;
-
     string kind;
 
     ReflectiveCallNode() { this = TReflectiveCallNode(call, kind) }
@@ -383,6 +503,8 @@ module DataFlow {
    *
    * The default subclasses do not model global variable references or variable
    * references inside `with` statements as property references.
+   *
+   * See `PropWrite` and `PropRead` for concrete syntax examples.
    */
   abstract class PropRef extends Node {
     /**
@@ -417,6 +539,22 @@ module DataFlow {
 
   /**
    * A data flow node that writes to an object property.
+   *
+   * For example, all of the following are property writes:
+   * ```js
+   * obj.f = value;  // assignment to a property
+   * obj[e] = value; // assignment to a computed property
+   * { f: value }    // property initializer
+   * { g() {} }      // object literal method
+   * { get g() {}, set g(v) {} }  // accessor methods (have no rhs value)
+   * class C {
+   *   constructor(public x: number); // parameter field (TypeScript only)
+   *   static m() {} // static method
+   *   g() {}        // instance method
+   * }
+   * Object.defineProperty(obj, 'f', { value: 5} ) // call to defineProperty
+   * <View width={value}/>  // JSX attribute
+   * ```
    */
   abstract class PropWrite extends PropRef {
     /**
@@ -590,7 +728,7 @@ module DataFlow {
       exists(Parameter param, Node paramNode |
         param = prop.getParameter() and
         parameterNode(paramNode, param)
-        |
+      |
         result = paramNode
         or
         // special case: there is no SSA flow step for unused parameters
@@ -629,6 +767,17 @@ module DataFlow {
 
   /**
    * A data flow node that reads an object property.
+   *
+   * For example, all the following are property reads:
+   * ```js
+   * obj.f               // property access
+   * obj[e]              // computed property access
+   * let { f } = obj;    // destructuring object pattern
+   * let [x, y] = array; // destructuring array pattern
+   * function f({ f }) {} // destructuring pattern (in parameter)
+   * for (let elm of array) {}     // element access in for..of loop
+   * import { join } from 'path';  // named import specifier
+   * ```
    */
   abstract class PropRead extends PropRef, SourceNode { }
 
@@ -642,7 +791,8 @@ module DataFlow {
     PropReadAsSourceNode() {
       this = TPropNode(any(PropertyPattern p)) or
       this instanceof RestPatternNode or
-      this instanceof ElementPatternNode
+      this instanceof ElementPatternNode or
+      this = lvalueNode(any(ForOfStmt stmt).getLValue())
     }
   }
 
@@ -695,37 +845,56 @@ module DataFlow {
    * An array element pattern viewed as a property read; for instance, in
    * `var [ x, y ] = arr`, `x` is a read of property 0 of `arr` and similar
    * for `y`.
-   *
-   * Note: We currently do not expose the array index as the property name,
-   * instead treating it as a read of an unknown property.
    */
   private class ElementPatternAsPropRead extends PropRead, ElementPatternNode {
     override Node getBase() { result = TDestructuringPatternNode(pattern) }
 
     override Expr getPropertyNameExpr() { none() }
 
-    override string getPropertyName() { none() }
+    override string getPropertyName() {
+      exists (int i |
+        elt = pattern.getElement(i) and
+        result = i.toString()
+      )
+    }
   }
 
   /**
    * A named import specifier seen as a property read on the imported module.
    */
-  private class ImportSpecifierAsPropRead extends PropRead {
+  private class ImportSpecifierAsPropRead extends PropRead, ValueNode {
+    override ImportSpecifier astNode;
+
     ImportDeclaration imprt;
 
-    ImportSpecifier spec;
-
     ImportSpecifierAsPropRead() {
-      spec = imprt.getASpecifier() and
-      exists(spec.getImportedName()) and
-      this = ssaDefinitionNode(SSA::definition(spec))
+      astNode = imprt.getASpecifier() and
+      exists(astNode.getImportedName())
     }
 
     override Node getBase() { result = TDestructuredModuleImportNode(imprt) }
 
-    override Expr getPropertyNameExpr() { result = spec.getImported() }
+    override Expr getPropertyNameExpr() { result = astNode.getImported() }
 
-    override string getPropertyName() { result = spec.getImportedName() }
+    override string getPropertyName() { result = astNode.getImportedName() }
+  }
+
+  /**
+   * The left-hand side of a `for..of` statement, seen as a property read
+   * on the object being iterated over.
+   */
+  private class ForOfLvalueAsPropRead extends PropRead {
+    ForOfStmt stmt;
+
+    ForOfLvalueAsPropRead() {
+      this = lvalueNode(stmt.getLValue())
+    }
+
+    override Node getBase() { result = stmt.getIterationDomain().flow() }
+
+    override Expr getPropertyNameExpr() { none() }
+
+    override string getPropertyName() { none() }
   }
 
   /**
@@ -788,6 +957,8 @@ module DataFlow {
       function.getLocation().hasLocationInfo(filepath, startline, startcolumn, endline, endcolumn)
     }
 
+    override BasicBlock getBasicBlock() { result = function.(ExprOrStmt).getBasicBlock() }
+
     /**
      * Gets the function corresponding to this exceptional return node.
      */
@@ -810,11 +981,36 @@ module DataFlow {
       invoke.getLocation().hasLocationInfo(filepath, startline, startcolumn, endline, endcolumn)
     }
 
+    override BasicBlock getBasicBlock() { result = invoke.getBasicBlock() }
+
     /**
      * Gets the invocation corresponding to this exceptional return node.
      */
     DataFlow::InvokeNode getInvocation() { result = invoke.flow() }
   }
+
+  /**
+   * A pseudo-node representing the root of a global access path.
+   */
+  private class GlobalAccessPathRoot extends TGlobalAccessPathRoot, DataFlow::Node {
+    override string toString() { result = "global access path" }
+  }
+
+  /**
+   * INTERNAL. DO NOT USE.
+   *
+   * Gets a pseudo-node representing the root of a global access path.
+   */
+  DataFlow::Node globalAccessPathRootPseudoNode() { result instanceof TGlobalAccessPathRoot }
+  
+  /**
+   * Gets a data flow node representing the underlying call performed by the given
+   * call to `Function.prototype.call` or `Function.prototype.apply`.
+   *
+   * For example, for an expression `fn.call(x, y)`, this gets a call node with `fn` as the
+   * callee, `x` as the receiver, and `y` as the first argument.
+   */
+  DataFlow::InvokeNode reflectiveCallNode(InvokeExpr expr) { result = TReflectiveCallNode(expr, _) }
 
   /**
    * Provides classes representing various kinds of calls.
@@ -829,6 +1025,9 @@ module DataFlow {
      * and either with or without `new`.
      */
     abstract class InvokeNodeDef extends DataFlow::Node {
+      /** Gets the syntactic invoke expression underlying this function invocation. */
+      abstract InvokeExpr getInvokeExpr();
+
       /** Gets the name of the function or method being invoked, if it can be determined. */
       abstract string getCalleeName();
 
@@ -840,6 +1039,12 @@ module DataFlow {
 
       /** Gets the data flow node corresponding to an argument of this invocation. */
       abstract DataFlow::Node getAnArgument();
+
+      /**
+       * Gets a data flow node corresponding to an array of values being passed as
+       * individual arguments to this invocation.
+       */
+      abstract DataFlow::Node getASpreadArgument();
 
       /** Gets the number of arguments of this invocation, if it can be determined. */
       abstract int getNumArgument();
@@ -873,6 +1078,8 @@ module DataFlow {
     class ExplicitInvokeNode extends InvokeNodeDef, DataFlow::ValueNode {
       override InvokeExpr astNode;
 
+      override InvokeExpr getInvokeExpr() { result = astNode }
+
       override string getCalleeName() { result = astNode.getCalleeName() }
 
       override DataFlow::Node getCalleeNode() { result = DataFlow::valueNode(astNode.getCallee()) }
@@ -886,6 +1093,12 @@ module DataFlow {
         exists(Expr arg | arg = astNode.getAnArgument() |
           not arg instanceof SpreadElement and
           result = DataFlow::valueNode(arg)
+        )
+      }
+
+      override DataFlow::Node getASpreadArgument() {
+        exists(SpreadElement arg | arg = astNode.getAnArgument() |
+          result = DataFlow::valueNode(arg.getOperand())
         )
       }
 
@@ -924,12 +1137,15 @@ module DataFlow {
      */
     private class ReflectiveCallNodeDef extends CallNodeDef {
       ExplicitMethodCallNode originalCall;
-
       string kind;
 
       ReflectiveCallNodeDef() { this = TReflectiveCallNode(originalCall.asExpr(), kind) }
 
-      override string getCalleeName() { none() }
+      override InvokeExpr getInvokeExpr() { result = originalCall.getInvokeExpr() }
+
+      override string getCalleeName() {
+        result = originalCall.getReceiver().asExpr().(PropAccess).getPropertyName()
+      }
 
       override DataFlow::Node getCalleeNode() { result = originalCall.getReceiver() }
 
@@ -941,6 +1157,14 @@ module DataFlow {
 
       override DataFlow::Node getAnArgument() {
         kind = "call" and result = originalCall.getAnArgument() and result != getReceiver()
+      }
+
+      override DataFlow::Node getASpreadArgument() {
+        kind = "apply" and
+        result = originalCall.getArgument(1)
+        or
+        kind = "call" and
+        result = originalCall.getASpreadArgument()
       }
 
       override int getNumArgument() {
@@ -970,6 +1194,29 @@ module DataFlow {
   }
 
   /**
+   * A data flow node representing `this` in a function or top-level.
+   */
+  private class ThisNodeInternal extends Node, TThisNode {
+    override string toString() { result = "this" }
+
+    override BasicBlock getBasicBlock() {
+      exists(StmtContainer container | this = TThisNode(container) | result = container.getEntry())
+    }
+
+    override predicate hasLocationInfo(
+      string filepath, int startline, int startcolumn, int endline, int endcolumn
+    ) {
+      // Use the function entry as the location
+      exists(StmtContainer container | this = TThisNode(container) |
+        container
+            .getEntry()
+            .getLocation()
+            .hasLocationInfo(filepath, startline, startcolumn, endline, endcolumn)
+      )
+    }
+  }
+
+  /**
    * Gets the data flow node corresponding to `nd`.
    *
    * This predicate is only defined for expressions, properties, and for statements that declare
@@ -991,13 +1238,7 @@ module DataFlow {
   /**
    * INTERNAL: Use `parameterNode(Parameter)` instead.
    */
-  predicate parameterNode(DataFlow::Node nd, Parameter p) {
-    nd = ssaDefinitionNode(SSA::definition((SimpleParameter)p))
-    or
-    nd = TDestructuringPatternNode(p)
-    or
-    nd = TUnusedParameterNode(p)
-  }
+  predicate parameterNode(DataFlow::Node nd, Parameter p) { nd = lvalueNode(p) }
 
   /**
    * INTERNAL: Use `thisNode(StmtContainer container)` instead.
@@ -1033,6 +1274,25 @@ module DataFlow {
    */
   predicate exceptionalFunctionReturnNode(DataFlow::Node nd, Function function) {
     nd = TExceptionalFunctionReturnNode(function)
+  }
+
+  /**
+   * Gets the data flow node corresponding the given l-value expression, if
+   * such a node exists.
+   *
+   * This differs from `DataFlow::valueNode()`, which represents the value
+   * _before_ the l-value is assigned to, whereas `DataFlow::lvalueNode()`
+   * represents the value _after_ the assignment.
+   */
+  Node lvalueNode(BindingPattern lvalue) {
+    exists(SsaExplicitDefinition ssa |
+      ssa.defines(lvalue.(LValue).getDefNode(), lvalue.(VarRef).getVariable()) and
+      result = TSsaDefNode(ssa)
+    )
+    or
+    result = TDestructuringPatternNode(lvalue)
+    or
+    result = TUnusedParameterNode(lvalue)
   }
 
   /**
@@ -1078,17 +1338,99 @@ module DataFlow {
   }
 
   /**
+   * Holds if there is a step from `pred -> succ` due to an assignment
+   * to an expression in l-value position.
+   */
+  private predicate lvalueFlowStep(Node pred, Node succ) {
+    exists(VarDef def |
+      pred = valueNode(defSourceNode(def)) and
+      succ = lvalueNode(def.getTarget())
+    )
+    or
+    exists(PropertyPattern pattern |
+      pred = TPropNode(pattern) and
+      succ = lvalueNode(pattern.getValuePattern())
+    )
+    or
+    exists(Expr element |
+      pred = TElementPatternNode(_, element) and
+      succ = lvalueNode(element)
+    )
+  }
+
+  /**
+   * Holds if there is a step from `pred -> succ` from the default
+   * value of a destructuring pattern or parameter.
+   */
+  private predicate lvalueDefaultFlowStep(Node pred, Node succ) {
+    exists(PropertyPattern pattern |
+      pred = valueNode(pattern.getDefault()) and
+      succ = lvalueNode(pattern.getValuePattern())
+    )
+    or
+    exists(ArrayPattern array, int i |
+      pred = valueNode(array.getDefault(i)) and
+      succ = lvalueNode(array.getElement(i))
+    )
+    or
+    exists(Parameter param |
+      pred = valueNode(param.getDefault()) and
+      succ = parameterNode(param)
+    )
+  }
+
+  /**
+   * Flow steps shared between `getImmediatePredecessor` and `localFlowStep`.
+   *
+   * Inlining is forced because the two relations are indexed differently.
+   */
+  pragma[inline]
+  private predicate immediateFlowStep(Node pred, Node succ) {
+    exists(SsaVariable v |
+      pred = TSsaDefNode(v.getDefinition()) and
+      succ = valueNode(v.getAUse())
+    )
+    or
+    exists(Expr predExpr, Expr succExpr |
+      pred = valueNode(predExpr) and succ = valueNode(succExpr)
+    |
+      predExpr = succExpr.(ParExpr).getExpression()
+      or
+      predExpr = succExpr.(SeqExpr).getLastOperand()
+      or
+      predExpr = succExpr.(AssignExpr).getRhs()
+      or
+      predExpr = succExpr.(TypeAssertion).getExpression()
+      or
+      predExpr = succExpr.(NonNullAssertion).getExpression()
+      or
+      predExpr = succExpr.(ExpressionWithTypeArguments).getExpression()
+    )
+    or
+    // flow from 'this' parameter into 'this' expressions
+    exists(ThisExpr thiz |
+      pred = TThisNode(thiz.getBindingContainer()) and
+      succ = valueNode(thiz)
+    )
+    or
+    // `f.call(...)` and `f.apply(...)` evaluate to the result of the reflective call they perform
+    pred = TReflectiveCallNode(succ.asExpr(), _)
+  }
+
+  /**
    * Holds if data can flow from `pred` to `succ` in one local step.
    */
   cached
   predicate localFlowStep(Node pred, Node succ) {
-    // flow into local variables
-    exists(SsaDefinition ssa | succ = TSsaDefNode(ssa) |
-      // from the rhs of an explicit definition into the variable
-      exists(SsaExplicitDefinition def | def = ssa |
-        pred = defSourceNode(def.getDef(), def.getSourceVariable())
-      )
-      or
+    // flow from RHS into LHS
+    lvalueFlowStep(pred, succ)
+    or
+    lvalueDefaultFlowStep(pred, succ)
+    or
+    immediateFlowStep(pred, succ)
+    or
+    // Flow through implicit SSA nodes
+    exists(SsaImplicitDefinition ssa | succ = TSsaDefNode(ssa) |
       // from any explicit definition or implicit init of a captured variable into
       // the capturing definition
       exists(SsaSourceVariable v, SsaDefinition predDef |
@@ -1104,64 +1446,17 @@ module DataFlow {
       pred = TSsaDefNode(ssa.(SsaPseudoDefinition).getAnInput().getDefinition())
     )
     or
-    // flow out of local variables
-    exists(SsaVariable v |
-      pred = TSsaDefNode(v.getDefinition()) and
-      succ = valueNode(v.getAUse())
-    )
-    or
     exists(Expr predExpr, Expr succExpr |
       pred = valueNode(predExpr) and succ = valueNode(succExpr)
     |
-      predExpr = succExpr.(ParExpr).getExpression()
-      or
-      predExpr = succExpr.(SeqExpr).getLastOperand()
-      or
       predExpr = succExpr.(LogicalBinaryExpr).getAnOperand()
       or
-      predExpr = succExpr.(AssignExpr).getRhs()
-      or
       predExpr = succExpr.(ConditionalExpr).getABranch()
-      or
-      predExpr = succExpr.(TypeAssertion).getExpression()
-      or
-      predExpr = succExpr.(NonNullAssertion).getExpression()
-      or
-      predExpr = succExpr.(ExpressionWithTypeArguments).getExpression()
       or
       exists(Function f |
         predExpr = f.getAReturnedExpr() and
         localCall(succExpr, f)
       )
-    )
-    or
-    exists(VarDef def |
-      // from `e` to `{ p: x }` in `{ p: x } = e`
-      pred = valueNode(defSourceNode(def)) and
-      succ = TDestructuringPatternNode(def.getTarget())
-    )
-    or
-    // flow from the value read from a property pattern to the value being
-    // destructured in the child pattern. For example, for
-    //
-    //   let { p: { q: x } } = obj
-    //
-    // add edge from the 'p:' pattern to '{ q:x }'.
-    exists(PropertyPattern pattern |
-      pred = TPropNode(pattern) and
-      succ = TDestructuringPatternNode(pattern.getValuePattern())
-    )
-    or
-    // Like the step above, but for array destructuring patterns.
-    exists(Expr elm |
-      pred = TElementPatternNode(_, elm) and
-      succ = TDestructuringPatternNode(elm)
-    )
-    or
-    // flow from 'this' parameter into 'this' expressions
-    exists(ThisExpr thiz |
-      pred = TThisNode(thiz.getBindingContainer()) and
-      succ = valueNode(thiz)
     )
   }
 
@@ -1183,29 +1478,6 @@ module DataFlow {
     result = def.getSource() or
     result = def.getDestructuringSource() or
     localArgumentPassing(result, def)
-  }
-
-  /**
-   * Gets the data flow node representing the source of the definition of `v` at `def`,
-   * if any.
-   */
-  private Node defSourceNode(VarDef def, SsaSourceVariable v) {
-    exists(BindingPattern lhs, VarRef r |
-      lhs = def.getTarget() and r = lhs.getABindingVarRef() and r.getVariable() = v
-    |
-      // follow one step of the def-use chain if the lhs is a simple variable reference
-      lhs = r and
-      result = TValueNode(defSourceNode(def))
-      or
-      // handle destructuring assignments
-      exists(PropertyPattern pp | r = pp.getValuePattern() |
-        result = TPropNode(pp) or result = pp.getDefault().flow()
-      )
-      or
-      result = TElementPatternNode(_, r)
-      or
-      exists(ArrayPattern ap, int i | ap.getElement(i) = r and result = ap.getDefault(i).flow())
-    )
   }
 
   /**
@@ -1245,6 +1517,8 @@ module DataFlow {
       e instanceof SuperExpr
       or
       e instanceof NewTargetExpr
+      or
+      e instanceof ImportMetaExpr
       or
       e instanceof FunctionBindExpr
       or
@@ -1299,10 +1573,13 @@ module DataFlow {
     exists(ComprehensionBlock cb | def = cb.getIterator()) and
     cause = "yield"
   }
+
   import Nodes
   import Sources
   import TypeInference
   import Configuration
   import TrackedNodes
   import TypeTracking
+
+  predicate localTaintStep = TaintTracking::localTaintStep/2;
 }

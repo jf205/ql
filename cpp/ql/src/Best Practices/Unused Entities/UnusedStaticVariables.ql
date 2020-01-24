@@ -14,15 +14,14 @@
 import cpp
 
 predicate declarationHasSideEffects(Variable v) {
-  exists(Class c | c = v.getUnspecifiedType() |
-    c.hasConstructor() or c.hasDestructor()
-  )
+  exists(Class c | c = v.getUnspecifiedType() | c.hasConstructor() or c.hasDestructor())
 }
 
 from Variable v
 where
   v.isStatic() and
   v.hasDefinition() and
+  not v.isConstexpr() and
   not exists(VariableAccess a | a.getTarget() = v) and
   not v instanceof MemberVariable and
   not declarationHasSideEffects(v) and

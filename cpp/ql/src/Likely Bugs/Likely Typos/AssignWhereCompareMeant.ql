@@ -10,27 +10,26 @@
  *       correctness
  *       external/cwe/cwe-481
  */
-import cpp
-import semmle.code.cpp.controlflow.LocalScopeVariableReachability
 
-class UndefReachability extends LocalScopeVariableReachability {
-  UndefReachability() {
-    this = "UndefReachability"
-  }
-  
-  override predicate isSource(ControlFlowNode node, LocalScopeVariable v) {
+import cpp
+import semmle.code.cpp.controlflow.StackVariableReachability
+
+class UndefReachability extends StackVariableReachability {
+  UndefReachability() { this = "UndefReachability" }
+
+  override predicate isSource(ControlFlowNode node, StackVariable v) {
     candidateVariable(v) and
     node = v.getParentScope() and
     not v instanceof Parameter and
     not v.hasInitializer()
   }
-  
-  override predicate isSink(ControlFlowNode node, LocalScopeVariable v) {
+
+  override predicate isSink(ControlFlowNode node, StackVariable v) {
     candidateVariable(v) and
     node = v.getAnAccess()
   }
-  
-  override predicate isBarrier(ControlFlowNode node, LocalScopeVariable v) {
+
+  override predicate isBarrier(ControlFlowNode node, StackVariable v) {
     node.(AssignExpr).getLValue() = v.getAnAccess()
   }
 }
@@ -39,29 +38,42 @@ abstract class BooleanControllingAssignment extends AssignExpr {
   abstract predicate isWhitelisted();
 }
 
+/**
+ * Gets an operand of a logical operation expression (we need the restriction
+ * to BinaryLogicalOperation expressions to get the correct transitive closure).
+ */
+Expr getComparisonOperand(BinaryLogicalOperation op) { result = op.getAnOperand() }
+
 class BooleanControllingAssignmentInExpr extends BooleanControllingAssignment {
   BooleanControllingAssignmentInExpr() {
-       this.getParent() instanceof UnaryLogicalOperation
-    or this.getParent() instanceof BinaryLogicalOperation
-    or exists(ConditionalExpr c | c.getCondition() = this)
+    this.getParent() instanceof UnaryLogicalOperation or
+    this.getParent() instanceof BinaryLogicalOperation or
+    exists(ConditionalExpr c | c.getCondition() = this)
   }
 
   override predicate isWhitelisted() {
     this.getConversion().(ParenthesisExpr).isParenthesised()
+    or
+    // whitelist this assignment if all comparison operations in the expression that this
+    // assignment is part of, are not parenthesized. In that case it seems like programmer
+    // is fine with unparenthesized comparison operands to binary logical operators, and
+    // the parenthesis around this assignment was used to call it out as an assignment.
+    this.isParenthesised() and
+    forex(ComparisonOperation op | op = getComparisonOperand*(this.getParent+()) |
+      not op.isParenthesised()
+    )
   }
 }
 
 class BooleanControllingAssignmentInStmt extends BooleanControllingAssignment {
   BooleanControllingAssignmentInStmt() {
-       exists(IfStmt i | i.getCondition() = this)
-    or exists(ForStmt f | f.getCondition() = this)
-    or exists(WhileStmt w | w.getCondition() = this)
-    or exists(DoStmt d | d.getCondition() = this)
+    exists(IfStmt i | i.getCondition() = this) or
+    exists(ForStmt f | f.getCondition() = this) or
+    exists(WhileStmt w | w.getCondition() = this) or
+    exists(DoStmt d | d.getCondition() = this)
   }
 
-  override predicate isWhitelisted() {
-    this.isParenthesised()
-  }
+  override predicate isWhitelisted() { this.isParenthesised() }
 }
 
 /**
@@ -70,7 +82,8 @@ class BooleanControllingAssignmentInStmt extends BooleanControllingAssignment {
  */
 predicate candidateResult(BooleanControllingAssignment ae) {
   ae.getRValue().isConstant() and
-  not ae.isWhitelisted()
+  not ae.isWhitelisted() and
+  not ae.getRValue() instanceof StringLiteral
 }
 
 /**
@@ -84,6 +97,8 @@ predicate candidateVariable(Variable v) {
 }
 
 from BooleanControllingAssignment ae, UndefReachability undef
-where candidateResult(ae)
-  and not undef.reaches(_, ae.getLValue().(VariableAccess).getTarget(), ae.getLValue())
+where
+  candidateResult(ae) and
+  not ae.isFromUninstantiatedTemplate(_) and
+  not undef.reaches(_, ae.getLValue().(VariableAccess).getTarget(), ae.getLValue())
 select ae, "Use of '=' where '==' may have been intended."

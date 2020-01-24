@@ -101,7 +101,7 @@ predicate ssa_sanity(string clsname, string problem, string what) {
         problem = "does not have a __name__ variable"
         or
         not m.isPackage() and
-        not exists(PyNodeDefinition def |
+        not exists(EssaNodeDefinition def |
             def.getDefiningNode().getScope() = m and
             def.getVariable().getName() = "__name__"
         ) and
@@ -109,7 +109,17 @@ predicate ssa_sanity(string clsname, string problem, string what) {
     )
 }
 
+predicate undefined_sanity(string clsname, string problem, string what) {
+    /* Variables may be undefined, but values cannot be */
+    exists(ControlFlowNode f |
+        PointsToInternal::pointsTo(f, _, ObjectInternal::undefined(), _) and
+        clsname = f.getAQlClass() and not clsname = "AnyNode" and
+        problem = " points-to an undefined variable" and
+        what = f.toString()
+    )
+}
+
 from string clsname, string problem, string what
-where ssa_sanity(clsname, problem, what)
+where ssa_sanity(clsname, problem, what) or undefined_sanity(clsname, problem, what)
 select clsname, what, problem
 

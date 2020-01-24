@@ -40,3 +40,26 @@ interface Generic<T> {
 function foo(g: Generic<string>) {
   return g.method("foo");
 }
+
+declare class C {
+  constructor(x: string);
+  constructor(x: number);
+}
+
+interface WithRestParams {
+  method(x: number, ...y: string[]);
+  (x: number, ...y: string[]);
+  new(x: number, ...y: string[]);
+
+  method2(x: number, y: string[]);
+  method3(x: number, y: string);
+}
+
+interface OnlyRestParams {
+  method(...y: string[]);
+  (...y: string[]);
+  new(...y: string[]);
+
+  method2(y: string[]);
+  method3(y: string);
+}

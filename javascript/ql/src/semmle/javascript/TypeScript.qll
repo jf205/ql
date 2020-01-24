@@ -222,7 +222,7 @@ private class LiteralExternalModulePath extends PathExprInModule, ConstantString
     exists(ExternalModuleReference emr | this.getParentExpr*() = emr.getExpression())
   }
 
-  override string getValue() { result = this.(ConstantString).getStringValue() }
+  override string getValue() { result = getStringValue() }
 }
 
 /** A TypeScript "export-assign" declaration. */
@@ -542,14 +542,16 @@ class TypeExpr extends ExprOrType, @typeexpr, TypeAnnotation {
    * without type information.
    */
   override Type getType() { ast_node_type(this, result) }
-  
+
   override Stmt getEnclosingStmt() { result = ExprOrType.super.getEnclosingStmt() }
-  
+
   override Function getEnclosingFunction() { result = ExprOrType.super.getEnclosingFunction() }
-  
+
   override StmtContainer getContainer() { result = ExprOrType.super.getContainer() }
-  
+
   override TopLevel getTopLevel() { result = ExprOrType.super.getTopLevel() }
+
+  override DataFlow::ClassNode getClass() { result.getAstNode() = getType().(ClassType).getClass() }
 }
 
 /**
@@ -912,20 +914,49 @@ class TypeofTypeExpr extends @typeoftypeexpr, TypeExpr {
 }
 
 /**
- * A type of form `E is T` where `E` is a parameter name or `this`, and `T` is a type.
+ * A function return type that refines the type of one of its parameters or `this`.
  *
- * This can only occur as the return type of a function type.
+ * Examples:
+ * ```js
+ * function f(x): x is string {}
+ * function f(x): asserts x is string {}
+ * function f(x): asserts x {}
+ * ```
  */
-class IsTypeExpr extends @istypeexpr, TypeExpr {
+class PredicateTypeExpr extends @predicatetypeexpr, TypeExpr {
   /**
    * Gets the parameter name or `this` token `E` in `E is T`.
    */
   VarTypeAccess getParameterName() { result = this.getChildTypeExpr(0) }
 
   /**
-   * Gets the type `T` in `E is T`.
+   * Gets the type `T` in `E is T` or `asserts E is T`.
+   *
+   * Has no results for types of form `asserts E`.
    */
   TypeExpr getPredicateType() { result = this.getChildTypeExpr(1) }
+
+  /**
+   * Holds if this is a type of form `asserts E is T` or `asserts E`.
+   */
+  predicate hasAssertsKeyword() {
+    hasAssertsKeyword(this)
+  }
+}
+
+/**
+ * A function return type of form `x is T` or `asserts x is T`.
+ *
+ * Examples:
+ * ```js
+ * function f(x): x is string {}
+ * function f(x): asserts x is string {}
+ * ```
+ */
+class IsTypeExpr extends PredicateTypeExpr {
+  IsTypeExpr() {
+    exists(getPredicateType())
+  }
 }
 
 /**
@@ -964,15 +995,16 @@ class ReadonlyTypeExpr extends @readonlytypeexpr, TypeExpr {
  *
  * This can occur as
  * - part of the operand to a `typeof` type, or
- * - as the first operand to an `is` type.
+ * - as the first operand to a predicate type
  *
  * For example, it may occur as the `E` in these examples:
  * ```
  * var x : typeof E
  * function f(...) : E is T {}
+ * function f(...) : asserts E  {}
  * ```
  *
- * In the latter case, this may also refer to the pseudo-variable `this`.
+ * In the latter two cases, this may also refer to the pseudo-variable `this`.
  */
 class VarTypeAccess extends @vartypeaccess, TypeExpr { }
 
@@ -1475,6 +1507,44 @@ class ExternalModuleScope extends @externalmodulescope, Scope {
 }
 
 /**
+ * A reference to a global variable for which there is a
+ * TypeScript type annotation suggesting that it contains
+ * the namespace object of a module.
+ *
+ * For example:
+ * ```
+ * import * as net_outer from "net"
+ * declare global {
+ * 		var net: typeof net_outer
+ * }
+ *
+ * var s = net.createServer(); // this reference to net is an import
+ * ```
+ */
+class TSGlobalDeclImport extends DataFlow::ModuleImportNode::Range {
+  string path;
+
+  TSGlobalDeclImport() {
+    exists(
+      GlobalVariable gv, VariableDeclarator vd, TypeofTypeExpr tt, LocalVarTypeAccess pkg,
+      BulkImportDeclaration i
+    |
+      // gv is declared with type "typeof pkg"
+      vd.getBindingPattern() = gv.getADeclaration() and
+      tt = vd.getTypeAnnotation() and
+      pkg = tt.getExpressionName() and
+      // then, check pkg is imported as "import * as pkg from path"
+      i.getLocal().getVariable() = pkg.getVariable() and
+      path = i.getImportedPath().getValue() and
+      // finally, "this" needs to be a reference to gv
+      this = DataFlow::exprNode(gv.getAnAccess())
+    )
+  }
+
+  override string getPath() { result = path }
+}
+
+/**
  * A TypeScript comment of one of the two forms:
  * ```
  * /// <reference path="FILE.d.ts"/>
@@ -1483,7 +1553,6 @@ class ExternalModuleScope extends @externalmodulescope, Scope {
  */
 class ReferenceImport extends LineComment {
   string attribute;
-
   string value;
 
   ReferenceImport() {
@@ -1508,14 +1577,18 @@ class ReferenceImport extends LineComment {
   string getAttributeName() { result = attribute }
 
   /**
+   * DEPRECATED. This is no longer supported.
+   *
    * Gets the file referenced by this import.
    */
-  File getImportedFile() { none() } // Overridden in subtypes.
+  deprecated File getImportedFile() { none() }
 
   /**
+   * DEPRECATED. This is no longer supported.
+   *
    * Gets the top-level of the referenced file.
    */
-  TopLevel getImportedTopLevel() { result.getFile() = getImportedFile() }
+  deprecated TopLevel getImportedTopLevel() { none() }
 }
 
 /**
@@ -1526,24 +1599,6 @@ class ReferenceImport extends LineComment {
  */
 class ReferencePathImport extends ReferenceImport {
   ReferencePathImport() { attribute = "path" }
-
-  override File getImportedFile() { result = this.(PathExpr).resolve() }
-}
-
-/**
- * Treats reference imports comments as path expressions without exposing
- * the methods from `PathExpr` on `ReferenceImport`.
- */
-private class ReferenceImportAsPathExpr extends PathExpr {
-  ReferenceImport reference;
-
-  ReferenceImportAsPathExpr() { this = reference }
-
-  override string getValue() { result = reference.getAttributeValue() }
-
-  override Folder getSearchRoot(int priority) {
-    result = reference.getFile().getParentContainer() and priority = 0
-  }
 }
 
 /**
@@ -1554,14 +1609,6 @@ private class ReferenceImportAsPathExpr extends PathExpr {
  */
 class ReferenceTypesImport extends ReferenceImport {
   ReferenceTypesImport() { attribute = "types" }
-
-  override File getImportedFile() {
-    result = min(Folder nodeModules, int distance |
-        findNodeModulesFolder(getFile().getParentContainer(), nodeModules, distance)
-      |
-        nodeModules.getFolder("@types").getFolder(value).getFile("index.d.ts") order by distance
-      )
-  }
 }
 
 /**
@@ -1769,7 +1816,7 @@ class Type extends @type {
    *
    * For example, for a type `(S & T) | U` this gets the types `S`, `T`, and `U`.
    */
-  Type unfold() {
+  Type unfoldUnionAndIntersection() {
     not result instanceof UnionOrIntersectionType and
     (
       result = this
@@ -1780,6 +1827,27 @@ class Type extends @type {
       // We can use this to avoid recursion.
       result = this.(UnionType).getAnElementType().(IntersectionType).getAnElementType()
     )
+  }
+
+  /**
+   * Repeatedly unfolds unions, intersections, and type aliases and gets any of the underlying types,
+   * or this type itself if it is not a union or intersection.
+   *
+   * For example, the type `(S & T) | U` unfolds to `S`, `T`, and `U`.
+   *
+   * If this is a type alias, the alias is itself included in the result, but this is not the case for intermediate type aliases.
+   * For example:
+   * ```js
+   * type One = number | string;
+   * type Two = One | Function & {x: string};
+   * One; // unfolds to number, string, and One
+   * Two; // unfolds to number, string, One, Function, {x: string}, and Two
+   * ```
+   */
+  Type unfold() {
+    result = unfoldUnionAndIntersection()
+    or
+    result = this.(TypeAliasReference).getAliasedType().unfoldUnionAndIntersection()
   }
 
   /**
@@ -2241,6 +2309,24 @@ class EnumLiteralType extends TypeReference {
 }
 
 /**
+ * A type that refers to a type alias.
+ */
+class TypeAliasReference extends TypeReference {
+  TypeAliasReference() {
+    type_alias(this, _)
+  }
+
+  /**
+   * Gets the type behind the type alias.
+   *
+   * For example, for `type B<T> = T[][]`, this maps the type `B<number>` to `number[][]`.
+   */
+  Type getAliasedType() {
+    type_alias(this, result)
+  }
+}
+
+/**
  * An anonymous interface type, such as `{ x: number }`.
  */
 class AnonymousInterfaceType extends Type, @objecttype { }
@@ -2469,17 +2555,19 @@ class CallSignatureType extends @signature_type {
   predicate hasTypeParameters() { getNumTypeParameter() > 0 }
 
   /**
-   * Gets the type of the `n`th parameter of this signature.
+   * Gets the type of the `n`th parameter declared in this signature.
+   *
+   * If the `n`th parameter is a rest parameter `...T[]`, gets type `T`.
    */
   Type getParameter(int n) { n >= 0 and result = getChild(n + getNumTypeParameter()) }
 
   /**
-   * Gets the type of a parameter of this signature.
+   * Gets the type of a parameter of this signature, including the rest parameter, if any.
    */
   Type getAParameter() { result = getParameter(_) }
 
   /**
-   * Gets the number of parameters.
+   * Gets the number of parameters, including the rest parameter, if any.
    */
   int getNumParameter() { result = count(int i | exists(getParameter(i))) }
 
@@ -2491,7 +2579,7 @@ class CallSignatureType extends @signature_type {
 
   /**
    * Gets the number of optional parameters, that is,
-   * parameters that are marked as optional with the `?` suffix.
+   * parameters that are marked as optional with the `?` suffix or is a rest parameter.
    */
   int getNumOptionalParameter() { result = getNumParameter() - getNumRequiredParameter() }
 
@@ -2505,7 +2593,9 @@ class CallSignatureType extends @signature_type {
   }
 
   /**
-   * Holds if the `n`th parameter is declared optional with the `?` suffix.
+   * Holds if the `n`th parameter is declared optional with the `?` suffix or is the rest parameter.
+   *
+   * Note that rest parameters are not considered optional in this sense.
    */
   predicate isOptionalParameter(int n) {
     exists(getParameter(n)) and
@@ -2524,6 +2614,30 @@ class CallSignatureType extends @signature_type {
    * Gets the name of a parameter of this signature.
    */
   string getAParameterName() { result = getParameterName(_) }
+
+  /**
+   * Holds if this signature declares a rest parameter, such as `(x: number, ...y: string[])`.
+   */
+  predicate hasRestParameter() { signature_rest_parameter(this, _) }
+
+  /**
+   * Gets the type of the rest parameter, if any.
+   *
+   * For example, for the signature `(...y: string[])`, this gets the type `string`.
+   */
+  Type getRestParameterType() {
+    hasRestParameter() and
+    result = getParameter(getNumParameter() - 1)
+  }
+
+  /**
+   * Gets the type of the rest parameter as an array, if it exists.
+   *
+   * For example, for the signature `(...y: string[])`, this gets the type `string[]`.
+   */
+  PlainArrayType getRestParameterArrayType() {
+    signature_rest_parameter(this, result)
+  }
 }
 
 /**

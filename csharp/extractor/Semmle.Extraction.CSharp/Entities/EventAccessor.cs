@@ -1,4 +1,5 @@
 using Microsoft.CodeAnalysis;
+using System.IO;
 
 namespace Semmle.Extraction.CSharp.Entities
 {
@@ -12,10 +13,10 @@ namespace Semmle.Extraction.CSharp.Entities
         /// </summary>
         IEventSymbol EventSymbol => symbol.AssociatedSymbol as IEventSymbol;
 
-        public override void Populate()
+        public override void Populate(TextWriter trapFile)
         {
-            PopulateMethod();
-            ContainingType.ExtractGenerics();
+            PopulateMethod(trapFile);
+            ContainingType.PopulateGenerics();
 
             var @event = EventSymbol;
             if (@event == null)
@@ -27,12 +28,12 @@ namespace Semmle.Extraction.CSharp.Entities
             var parent = Event.Create(Context, @event);
             int kind;
             EventAccessor unboundAccessor;
-            if (symbol.Equals(@event.AddMethod))
+            if (SymbolEqualityComparer.Default.Equals(symbol, @event.AddMethod))
             {
                 kind = 1;
                 unboundAccessor = Create(Context, @event.OriginalDefinition.AddMethod);
             }
-            else if (symbol.Equals(@event.RemoveMethod))
+            else if (SymbolEqualityComparer.Default.Equals(symbol, @event.RemoveMethod))
             {
                 kind = 2;
                 unboundAccessor = Create(Context, @event.OriginalDefinition.RemoveMethod);
@@ -43,12 +44,12 @@ namespace Semmle.Extraction.CSharp.Entities
                 return;
             }
 
-            Context.Emit(Tuples.event_accessors(this, kind, symbol.Name, parent, unboundAccessor));
+            trapFile.event_accessors(this, kind, symbol.Name, parent, unboundAccessor);
 
             foreach (var l in Locations)
-                Context.Emit(Tuples.event_accessor_location(this, l));
+                trapFile.event_accessor_location(this, l);
 
-            Overrides();
+            Overrides(trapFile);
         }
 
         public new static EventAccessor Create(Context cx, IMethodSymbol symbol) =>

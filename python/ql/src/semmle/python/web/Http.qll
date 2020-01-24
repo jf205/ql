@@ -1,5 +1,5 @@
 import python
-import semmle.python.security.TaintTracking
+import semmle.python.dataflow.Implementation
 import semmle.python.security.strings.External
 import HttpConstants
 
@@ -16,20 +16,20 @@ class WsgiEnvironment extends TaintKind {
     WsgiEnvironment() { this = "wsgi.environment" }
 
     override TaintKind getTaintForFlowStep(ControlFlowNode fromnode, ControlFlowNode tonode) {
-        result = this and TaintFlowImplementation::copyCall(fromnode, tonode)
+        result = this and Implementation::copyCall(fromnode, tonode)
         or
         result = this and
-        tonode.(CallNode).getFunction().refersTo(theDictType()) and
+        tonode.(CallNode).getFunction().pointsTo(ClassValue::dict()) and
         tonode.(CallNode).getArg(0) = fromnode
         or
-        exists(StringObject key, string text |
+        exists(Value key, string text |
             tonode.(CallNode).getFunction().(AttrNode).getObject("get") = fromnode and
-            tonode.(CallNode).getArg(0).refersTo(key)
+            tonode.(CallNode).getArg(0).pointsTo(key)
             or
             tonode.(SubscriptNode).getValue() = fromnode and tonode.isLoad() and
-            tonode.(SubscriptNode).getIndex().refersTo(key)
+            tonode.(SubscriptNode).getIndex().pointsTo(key)
             |
-            text = key.getText() and result instanceof ExternalStringKind and
+            key = Value::forString(text) and result instanceof ExternalStringKind and
             (
                 text = "QUERY_STRING" or
                 text = "PATH_INFO" or
@@ -72,6 +72,19 @@ class UntrustedCookie extends TaintKind {
 
 }
 
+abstract class CookieOperation extends @py_flow_node {
+
+    abstract string toString();
+
+    abstract ControlFlowNode getKey();
+
+    abstract ControlFlowNode getValue();
+
+}
+
+abstract class CookieGet extends CookieOperation {}
+
+abstract class CookieSet extends CookieOperation {}
 
 /** Generic taint sink in a http response */
 abstract class HttpResponseTaintSink extends TaintSink {
@@ -81,3 +94,12 @@ abstract class HttpResponseTaintSink extends TaintSink {
     }
 
 }
+
+abstract class HttpRedirectTaintSink extends TaintSink {
+
+    override predicate sinks(TaintKind kind) { 
+        kind instanceof ExternalStringKind
+    }
+
+}
+

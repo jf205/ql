@@ -8,6 +8,11 @@
 | sources.js:1:6:1:11 | exceptional return of anonymous function | call |
 | sources.js:3:1:5:6 | exceptional return of (functi ... \\n})(23) | call |
 | sources.js:3:2:5:1 | exceptional return of anonymous function | call |
+| sources.js:9:1:12:1 | exceptional return of function foo | call |
+| sources.js:9:14:9:18 | array | call |
+| sources.js:10:12:10:14 | key | heap |
+| sources.js:11:12:11:18 | key | heap |
+| sources.js:11:14:11:16 | key | heap |
 | tst.js:1:10:1:11 | fs | import |
 | tst.js:16:1:20:9 | exceptional return of (functi ... ("arg") | call |
 | tst.js:16:2:20:1 | exceptional return of function f | call |
@@ -82,6 +87,11 @@
 | tst.js:111:23:111:25 | v2c | heap |
 | tst.js:111:29:111:31 | o2c | global |
 | tst.js:111:36:111:38 | o2d | global |
+| tst.js:115:1:115:5 | Array | global |
+| tst.js:115:1:115:10 | Array.call | global |
+| tst.js:115:1:115:10 | Array.call | heap |
+| tst.js:115:1:115:12 | Array.call() | call |
+| tst.js:115:1:115:12 | exceptional return of Array.call() | call |
 | tst.ts:2:14:2:19 | x | namespace |
 | tst.ts:3:3:3:8 | exceptional return of setX() | call |
 | tst.ts:3:3:3:8 | setX() | call |

@@ -1,5 +1,7 @@
+using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Semmle.Extraction.Kinds;
+using System.IO;
 using System.Linq;
 
 namespace Semmle.Extraction.CSharp.Entities.Expressions
@@ -17,7 +19,7 @@ namespace Semmle.Extraction.CSharp.Entities.Expressions
 
         public abstract InitializerExpressionSyntax  Initializer { get;  }
 
-        protected override void Populate()
+        protected override void PopulateExpression(TextWriter trapFile)
         {
             var child = 0;
             var explicitlySized = false;
@@ -41,7 +43,7 @@ namespace Semmle.Extraction.CSharp.Entities.Expressions
 
                         var info = new ExpressionInfo(
                             cx,
-                            Type.Create(cx, cx.Compilation.GetSpecialType(Microsoft.CodeAnalysis.SpecialType.System_Int32)),
+                            new AnnotatedType(Entities.Type.Create(cx, cx.Compilation.GetSpecialType(Microsoft.CodeAnalysis.SpecialType.System_Int32)), NullableAnnotation.None),
                             Location,
                             ExprKind.INT_LITERAL,
                             this,
@@ -65,7 +67,7 @@ namespace Semmle.Extraction.CSharp.Entities.Expressions
             }
 
             if (explicitlySized)
-                cx.Emit(Tuples.explicitly_sized_array_creation(this));
+                trapFile.explicitly_sized_array_creation(this);
         }
     }
 
@@ -97,14 +99,14 @@ namespace Semmle.Extraction.CSharp.Entities.Expressions
 
         public static Expression Create(ExpressionNodeInfo info) => new ImplicitArrayCreation(info).TryPopulate();
 
-        protected override void Populate()
+        protected override void PopulateExpression(TextWriter trapFile)
         {
             if (Syntax.Initializer != null)
             {
                 ArrayInitializer.Create(new ExpressionNodeInfo(cx, Syntax.Initializer, this, -1));
             }
 
-            cx.Emit(Tuples.implicitly_typed_array_creation(this));
+            trapFile.implicitly_typed_array_creation(this);
         }
     }
 }

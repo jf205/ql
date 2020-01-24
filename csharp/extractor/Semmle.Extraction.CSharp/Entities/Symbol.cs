@@ -2,6 +2,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Semmle.Extraction.Entities;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
@@ -15,22 +16,47 @@ namespace Semmle.Extraction.CSharp.Entities
 
         public virtual Type ContainingType => symbol.ContainingType != null ? Type.Create(Context, symbol.ContainingType) : null;
 
-        public void ExtractModifiers()
+        public void PopulateModifiers(TextWriter trapFile)
         {
-            Modifier.ExtractModifiers(Context, this, symbol);
+            Modifier.ExtractModifiers(Context, trapFile, this, symbol);
         }
 
-        protected void ExtractAttributes()
+        protected void PopulateAttributes()
         {
             // Only extract attributes for source declarations
             if (ReferenceEquals(symbol, symbol.OriginalDefinition))
                 Attribute.ExtractAttributes(Context, symbol, this);
         }
 
-        protected void ExtractCompilerGenerated()
+        protected void PopulateNullability(TextWriter trapFile, AnnotatedTypeSymbol type)
+        {
+            var n = NullabilityEntity.Create(Context, Nullability.Create(type));
+            if (!type.HasObliviousNullability())
+            {
+                trapFile.type_nullability(this, n);
+            }
+        }
+
+        protected void PopulateRefKind(TextWriter trapFile, RefKind kind)
+        {
+            switch (kind)
+            {
+                case RefKind.Out:
+                    trapFile.type_annotation(this, Kinds.TypeAnnotation.Out);
+                    break;
+                case RefKind.Ref:
+                    trapFile.type_annotation(this, Kinds.TypeAnnotation.Ref);
+                    break;
+                case RefKind.RefReadOnly:
+                    trapFile.type_annotation(this, Kinds.TypeAnnotation.ReadonlyRef);
+                    break;
+            }
+        }
+
+        protected void ExtractCompilerGenerated(TextWriter trapFile)
         {
             if (symbol.IsImplicitlyDeclared)
-                Context.Emit(Tuples.compiler_generated(this));
+                trapFile.compiler_generated(this);
         }
 
         /// <summary>
@@ -101,12 +127,12 @@ namespace Semmle.Extraction.CSharp.Entities
 
         public Extraction.Entities.Location Location => Context.Create(ReportingLocation);
 
-        protected void ExtractMetadataHandle()
+        protected void PopulateMetadataHandle(TextWriter trapFile)
         {
             var handle = MetadataHandle;
 
             if (handle.HasValue)
-                Context.Emit(Tuples.metadata_handle(this, Location, MetadataTokens.GetToken(handle.Value)));
+                trapFile.metadata_handle(this, Location, MetadataTokens.GetToken(handle.Value));
         }
 
         public Handle? MetadataHandle

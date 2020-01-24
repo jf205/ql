@@ -1,6 +1,8 @@
-import cpp
+private import cpp
 import semmle.code.cpp.ir.implementation.raw.IR
-private import semmle.code.cpp.ir.internal.OperandTag
+private import semmle.code.cpp.ir.implementation.internal.OperandTag
+private import semmle.code.cpp.ir.internal.CppType
+private import semmle.code.cpp.ir.internal.Overlap
 private import semmle.code.cpp.ir.internal.TempVariableTag
 private import InstructionTag
 private import TranslatedCondition
@@ -13,23 +15,28 @@ TranslatedElement getInstructionTranslatedElement(Instruction instruction) {
   instruction = MkInstruction(result, _)
 }
 
-InstructionTag getInstructionTag(Instruction instruction) {
-  instruction = MkInstruction(_, result)
-}
+InstructionTag getInstructionTag(Instruction instruction) { instruction = MkInstruction(_, result) }
 
 import Cached
-cached private module Cached {
-  cached predicate functionHasIR(Function func) {
-    exists(getTranslatedFunction(func))
-  }
 
-  cached newtype TInstruction =
+cached
+private module Cached {
+  cached
+  predicate functionHasIR(Function func) { exists(getTranslatedFunction(func)) }
+
+  cached
+  newtype TInstruction =
     MkInstruction(TranslatedElement element, InstructionTag tag) {
-      element.hasInstruction(_, tag, _, _)
+      element.hasInstruction(_, tag, _)
     }
 
-  cached predicate hasTempVariable(Function func, Locatable ast, TempVariableTag tag,
-    Type type) {
+  cached
+  predicate hasUserVariable(Function func, Variable var, CppType type) {
+    getTranslatedFunction(func).hasUserVariable(var, type)
+  }
+
+  cached
+  predicate hasTempVariable(Function func, Locatable ast, TempVariableTag tag, CppType type) {
     exists(TranslatedElement element |
       element.getAST() = ast and
       func = element.getFunction() and
@@ -37,88 +44,122 @@ cached private module Cached {
     )
   }
 
-  cached predicate hasModeledMemoryResult(Instruction instruction) {
-    none()
+  cached
+  predicate hasStringLiteral(Function func, Locatable ast, CppType type, StringLiteral literal) {
+    literal = ast and
+    literal.getEnclosingFunction() = func and
+    getTypeForPRValue(literal.getType()) = type
   }
 
-  cached Expr getInstructionConvertedResultExpression(Instruction instruction) {
+  cached
+  predicate hasModeledMemoryResult(Instruction instruction) { none() }
+
+  cached
+  Expr getInstructionConvertedResultExpression(Instruction instruction) {
     exists(TranslatedExpr translatedExpr |
       translatedExpr = getTranslatedExpr(result) and
-      instruction = translatedExpr.getResult()
+      instruction = translatedExpr.getResult() and
+      // Only associate `instruction` with this expression if the translated
+      // expression actually produced the instruction; not if it merely
+      // forwarded the result of another translated expression.
+      instruction = translatedExpr.getInstruction(_)
     )
   }
 
-  cached Expr getInstructionUnconvertedResultExpression(Instruction instruction) {
-    exists(Expr converted, TranslatedExpr translatedExpr |
+  cached
+  Expr getInstructionUnconvertedResultExpression(Instruction instruction) {
+    exists(Expr converted |
       result = converted.(Conversion).getExpr+()
       or
       result = converted
-      |
+    |
       not result instanceof Conversion and
-      translatedExpr = getTranslatedExpr(converted) and
-      instruction = translatedExpr.getResult()
+      converted = getInstructionConvertedResultExpression(instruction)
     )
   }
-  
-  cached Instruction getRegisterOperandDefinition(Instruction instruction, RegisterOperandTag tag) {
-    result = getInstructionTranslatedElement(instruction).getInstructionOperand(
-      getInstructionTag(instruction), tag)
+
+  cached
+  Instruction getRegisterOperandDefinition(Instruction instruction, RegisterOperandTag tag) {
+    result = getInstructionTranslatedElement(instruction)
+          .getInstructionOperand(getInstructionTag(instruction), tag)
   }
 
-  cached Instruction getMemoryOperandDefinition(Instruction instruction, MemoryOperandTag tag, Overlap overlap) {
-    result = getInstructionTranslatedElement(instruction).getInstructionOperand(
-      getInstructionTag(instruction), tag) and
+  cached
+  Instruction getMemoryOperandDefinition(
+    Instruction instruction, MemoryOperandTag tag, Overlap overlap
+  ) {
+    result = getInstructionTranslatedElement(instruction)
+          .getInstructionOperand(getInstructionTag(instruction), tag) and
     overlap instanceof MustTotallyOverlap
   }
 
-  cached Type getInstructionOperandType(Instruction instruction, TypedOperandTag tag) {
+  /** Gets a non-phi instruction that defines an operand of `instr`. */
+  private Instruction getNonPhiOperandDef(Instruction instr) {
+    result = getRegisterOperandDefinition(instr, _)
+    or
+    result = getMemoryOperandDefinition(instr, _, _)
+  }
+
+  /**
+   * Holds if `instr` is part of a cycle in the operand graph that doesn't go
+   * through a phi instruction and therefore should be impossible.
+   *
+   * If such cycles are present, either due to a programming error in the IR
+   * generation or due to a malformed database, it can cause infinite loops in
+   * analyses that assume a cycle-free graph of non-phi operands. Therefore it's
+   * better to remove these operands than to leave cycles in the operand graph.
+   */
+  pragma[noopt]
+  cached
+  predicate isInCycle(Instruction instr) {
+    instr instanceof Instruction and
+    getNonPhiOperandDef+(instr) = instr
+  }
+
+  cached
+  CppType getInstructionOperandType(Instruction instruction, TypedOperandTag tag) {
     // For all `LoadInstruction`s, the operand type of the `LoadOperand` is the same as
     // the result type of the load.
-    result = instruction.(LoadInstruction).getResultType() or
-    (
-      not instruction instanceof LoadInstruction and 
-      result = getInstructionTranslatedElement(instruction).getInstructionOperandType(
-        getInstructionTag(instruction), tag)
-    )
+    result = instruction.(LoadInstruction).getResultLanguageType()
+    or
+    not instruction instanceof LoadInstruction and
+    result = getInstructionTranslatedElement(instruction)
+          .getInstructionOperandType(getInstructionTag(instruction), tag)
   }
 
-  cached int getInstructionOperandSize(Instruction instruction, SideEffectOperandTag tag) {
-    result = getInstructionTranslatedElement(instruction).getInstructionOperandSize(
-      getInstructionTag(instruction), tag)
-  }
-  
-  cached Instruction getPhiOperandDefinition(PhiInstruction instruction, IRBlock predecessorBlock, Overlap overlap) {
+  cached
+  Instruction getPhiOperandDefinition(
+    PhiInstruction instruction, IRBlock predecessorBlock, Overlap overlap
+  ) {
     none()
   }
 
-  cached Instruction getPhiInstructionBlockStart(PhiInstruction instr) {
-    none()
+  cached
+  Instruction getPhiInstructionBlockStart(PhiInstruction instr) { none() }
+
+  cached
+  Instruction getInstructionSuccessor(Instruction instruction, EdgeKind kind) {
+    result = getInstructionTranslatedElement(instruction)
+          .getInstructionSuccessor(getInstructionTag(instruction), kind)
   }
 
-  cached Instruction getInstructionSuccessor(Instruction instruction, EdgeKind kind) {
-    result = getInstructionTranslatedElement(instruction).getInstructionSuccessor(
-      getInstructionTag(instruction), kind)
-  }
-
-  // This predicate has pragma[noopt] because otherwise the `getAChild*` calls
-  // get joined too early. The join order for the loop cases goes like this:
-  // - Find all loops of that type (tens of thousands).
-  // - Find all edges into the start of the loop (x 2).
-  // - Restrict to edges that originate within the loop (/ 2).
-  pragma[noopt]
-  cached Instruction getInstructionBackEdgeSuccessor(Instruction instruction, EdgeKind kind) {
+  /**
+   * Holds if the CFG edge (`sourceElement`, `sourceTag`) ---`kind`-->
+   * `targetInstruction` is a back edge under the condition that
+   * `requiredAncestor` is an ancestor of `sourceElement`.
+   */
+  private predicate backEdgeCandidate(
+    TranslatedElement sourceElement, InstructionTag sourceTag, TranslatedElement requiredAncestor,
+    Instruction targetInstruction, EdgeKind kind
+  ) {
     // While loop:
     // Any edge from within the body of the loop to the condition of the loop
     // is a back edge. This includes edges from `continue` and the fall-through
     // edge(s) after the last instruction(s) in the body.
     exists(TranslatedWhileStmt s |
-      s instanceof TranslatedWhileStmt and
-      result = s.getFirstConditionInstruction() and
-      exists(TranslatedElement inBody, InstructionTag tag |
-        result = inBody.getInstructionSuccessor(tag, kind) and
-        exists(TranslatedElement body | body = s.getBody() | inBody = body.getAChild*()) and
-        instruction = inBody.getInstruction(tag)
-      )
+      targetInstruction = s.getFirstConditionInstruction() and
+      targetInstruction = sourceElement.getInstructionSuccessor(sourceTag, kind) and
+      requiredAncestor = s.getBody()
     )
     or
     // Do-while loop:
@@ -127,15 +168,9 @@ cached private module Cached {
     // { ... } while (0)` statement. Note that all `continue` statements in a
     // do-while loop produce forward edges.
     exists(TranslatedDoStmt s |
-      s instanceof TranslatedDoStmt and
-      exists(TranslatedStmt body | body = s.getBody() | result = body.getFirstInstruction()) and
-      exists(TranslatedElement inCondition, InstructionTag tag |
-        result = inCondition.getInstructionSuccessor(tag, kind) and
-        exists(TranslatedElement condition | condition = s.getCondition() |
-          inCondition = condition.getAChild*()
-        ) and
-        instruction = inCondition.getInstruction(tag)
-      )
+      targetInstruction = s.getBody().getFirstInstruction() and
+      targetInstruction = sourceElement.getInstructionSuccessor(sourceTag, kind) and
+      requiredAncestor = s.getCondition()
     )
     or
     // For loop:
@@ -145,36 +180,42 @@ cached private module Cached {
     // last instruction(s) in the body. A for loop may not have a condition, in
     // which case `getFirstConditionInstruction` returns the body instead.
     exists(TranslatedForStmt s |
-      s instanceof TranslatedForStmt and
-      result = s.getFirstConditionInstruction() and
-      exists(TranslatedElement inLoop, InstructionTag tag |
-        result = inLoop.getInstructionSuccessor(tag, kind) and
-        exists(TranslatedElement bodyOrUpdate |
-          bodyOrUpdate = s.getBody()
-          or
-          bodyOrUpdate = s.getUpdate()
-        |
-          inLoop = bodyOrUpdate.getAChild*()
-        ) and
-        instruction = inLoop.getInstruction(tag)
+      targetInstruction = s.getFirstConditionInstruction() and
+      targetInstruction = sourceElement.getInstructionSuccessor(sourceTag, kind) and
+      (
+        requiredAncestor = s.getUpdate()
+        or
+        not exists(s.getUpdate()) and
+        requiredAncestor = s.getBody()
       )
     )
     or
     // Range-based for loop:
     // Any edge from within the update of the loop to the condition of
     // the loop is a back edge.
-    exists(TranslatedRangeBasedForStmt s, TranslatedCondition condition |
-      s instanceof TranslatedRangeBasedForStmt and
-      condition = s.getCondition() and
-      result = condition.getFirstInstruction() and
-      exists(TranslatedElement inUpdate, InstructionTag tag |
-        result = inUpdate.getInstructionSuccessor(tag, kind) and
-        exists(TranslatedElement update |
-          update = s.getUpdate() |
-          inUpdate = update.getAChild*()
-        ) and
-        instruction = inUpdate.getInstruction(tag)
-      )
+    exists(TranslatedRangeBasedForStmt s |
+      targetInstruction = s.getCondition().getFirstInstruction() and
+      targetInstruction = sourceElement.getInstructionSuccessor(sourceTag, kind) and
+      requiredAncestor = s.getUpdate()
+    )
+  }
+
+  private predicate jumpSourceHasAncestor(TranslatedElement jumpSource, TranslatedElement ancestor) {
+    backEdgeCandidate(jumpSource, _, _, _, _) and
+    ancestor = jumpSource
+    or
+    // For performance, we don't want a fastTC here
+    jumpSourceHasAncestor(jumpSource, ancestor.getAChild())
+  }
+
+  cached
+  Instruction getInstructionBackEdgeSuccessor(Instruction instruction, EdgeKind kind) {
+    exists(
+      TranslatedElement sourceElement, InstructionTag sourceTag, TranslatedElement requiredAncestor
+    |
+      backEdgeCandidate(sourceElement, sourceTag, requiredAncestor, result, kind) and
+      jumpSourceHasAncestor(sourceElement, requiredAncestor) and
+      instruction = sourceElement.getInstruction(sourceTag)
     )
     or
     // Goto statement:
@@ -184,7 +225,6 @@ cached private module Cached {
     // same location for source and target, so we conservatively assume that
     // such a `goto` creates a back edge.
     exists(TranslatedElement s, GotoStmt goto |
-      goto instanceof GotoStmt and
       not isStrictlyForwardGoto(goto) and
       goto = s.getAST() and
       exists(InstructionTag tag |
@@ -199,87 +239,117 @@ cached private module Cached {
     goto.getLocation().isBefore(goto.getTarget().getLocation())
   }
 
-  cached Locatable getInstructionAST(Instruction instruction) {
+  cached
+  Locatable getInstructionAST(Instruction instruction) {
     result = getInstructionTranslatedElement(instruction).getAST()
   }
 
-  cached predicate instructionHasType(Instruction instruction, Type type, boolean isGLValue) {
+  cached
+  CppType getInstructionResultType(Instruction instruction) {
     getInstructionTranslatedElement(instruction)
-      .hasInstruction(_, getInstructionTag(instruction), type, isGLValue)
+        .hasInstruction(_, getInstructionTag(instruction), result)
   }
 
-  cached Opcode getInstructionOpcode(Instruction instruction) {
+  cached
+  Opcode getInstructionOpcode(Instruction instruction) {
     getInstructionTranslatedElement(instruction)
-      .hasInstruction(result, getInstructionTag(instruction), _, _)
+        .hasInstruction(result, getInstructionTag(instruction), _)
   }
 
-  cached IRFunction getInstructionEnclosingIRFunction(Instruction instruction) {
+  cached
+  IRFunction getInstructionEnclosingIRFunction(Instruction instruction) {
     result.getFunction() = getInstructionTranslatedElement(instruction).getFunction()
   }
 
-  cached IRVariable getInstructionVariable(Instruction instruction) {
-    result = getInstructionTranslatedElement(instruction).getInstructionVariable(
-      getInstructionTag(instruction))
+  cached
+  IRVariable getInstructionVariable(Instruction instruction) {
+    exists(TranslatedElement element, InstructionTag tag |
+      element = getInstructionTranslatedElement(instruction) and
+      tag = getInstructionTag(instruction) and
+      (
+        result = element.getInstructionVariable(tag) or
+        result.(IRStringLiteral).getAST() = element.getInstructionStringLiteral(tag)
+      )
+    )
   }
 
-  cached Field getInstructionField(Instruction instruction) {
+  cached
+  Field getInstructionField(Instruction instruction) {
     exists(TranslatedElement element, InstructionTag tag |
       instructionOrigin(instruction, element, tag) and
       result = element.getInstructionField(tag)
     )
   }
 
-  cached Function getInstructionFunction(Instruction instruction) {
+  cached
+  Function getInstructionFunction(Instruction instruction) {
     result = getInstructionTranslatedElement(instruction)
-            .getInstructionFunction(getInstructionTag(instruction))
+          .getInstructionFunction(getInstructionTag(instruction))
   }
 
-  cached string getInstructionConstantValue(Instruction instruction) {
-    result =
-      getInstructionTranslatedElement(instruction).getInstructionConstantValue(
-        getInstructionTag(instruction))
+  cached
+  string getInstructionConstantValue(Instruction instruction) {
+    result = getInstructionTranslatedElement(instruction)
+          .getInstructionConstantValue(getInstructionTag(instruction))
   }
 
-  cached StringLiteral getInstructionStringLiteral(Instruction instruction) {
-    result =
-      getInstructionTranslatedElement(instruction).getInstructionStringLiteral(
-        getInstructionTag(instruction))
+  cached
+  int getInstructionIndex(Instruction instruction) {
+    exists(TranslatedElement element, InstructionTag tag |
+      instructionOrigin(instruction, element, tag) and
+      result = element.getInstructionIndex(tag)
+    )
   }
 
-  cached Type getInstructionExceptionType(Instruction instruction) {
-    result =
-      getInstructionTranslatedElement(instruction).getInstructionExceptionType(
-        getInstructionTag(instruction))
+  cached
+  BuiltInOperation getInstructionBuiltInOperation(Instruction instruction) {
+    result = getInstructionTranslatedElement(instruction)
+          .getInstructionBuiltInOperation(getInstructionTag(instruction))
   }
 
-  cached predicate getInstructionInheritance(Instruction instruction,
-      Class baseClass, Class derivedClass) {
-    getInstructionTranslatedElement(instruction).getInstructionInheritance(
-      getInstructionTag(instruction), baseClass, derivedClass)
+  cached
+  CppType getInstructionExceptionType(Instruction instruction) {
+    result = getInstructionTranslatedElement(instruction)
+          .getInstructionExceptionType(getInstructionTag(instruction))
+  }
+
+  cached
+  predicate getInstructionInheritance(Instruction instruction, Class baseClass, Class derivedClass) {
+    getInstructionTranslatedElement(instruction)
+        .getInstructionInheritance(getInstructionTag(instruction), baseClass, derivedClass)
   }
 
   pragma[noinline]
-  private predicate instructionOrigin(Instruction instruction, 
-      TranslatedElement element, InstructionTag tag) {
+  private predicate instructionOrigin(
+    Instruction instruction, TranslatedElement element, InstructionTag tag
+  ) {
     element = getInstructionTranslatedElement(instruction) and
     tag = getInstructionTag(instruction)
   }
 
-  cached int getInstructionElementSize(Instruction instruction) {
+  cached
+  int getInstructionElementSize(Instruction instruction) {
     exists(TranslatedElement element, InstructionTag tag |
       instructionOrigin(instruction, element, tag) and
       result = element.getInstructionElementSize(tag)
     )
   }
 
-  cached int getInstructionResultSize(Instruction instruction) {
+  cached
+  predicate needsUnknownOpaqueType(int byteSize) {
+    exists(TranslatedElement element | element.needsUnknownOpaqueType(byteSize))
+  }
+
+  cached
+  int getInstructionResultSize(Instruction instruction) {
     exists(TranslatedElement element, InstructionTag tag |
       instructionOrigin(instruction, element, tag) and
       result = element.getInstructionResultSize(tag)
     )
   }
 
-  cached Instruction getPrimaryInstructionForSideEffect(Instruction instruction) {
+  cached
+  Instruction getPrimaryInstructionForSideEffect(Instruction instruction) {
     exists(TranslatedElement element, InstructionTag tag |
       instructionOrigin(instruction, element, tag) and
       result = element.getPrimaryInstructionForSideEffect(tag)
@@ -288,16 +358,20 @@ cached private module Cached {
 }
 
 import CachedForDebugging
-cached private module CachedForDebugging {
-  cached string getTempVariableUniqueId(IRTempVariable var) {
+
+cached
+private module CachedForDebugging {
+  cached
+  string getTempVariableUniqueId(IRTempVariable var) {
     exists(TranslatedElement element |
       var = element.getTempVariable(_) and
       result = element.getId() + ":" + getTempVariableTagId(var.getTag())
     )
   }
 
-  cached string getInstructionUniqueId(Instruction instruction) {
+  cached
+  string getInstructionUniqueId(Instruction instruction) {
     result = getInstructionTranslatedElement(instruction).getId() + ":" +
-      getInstructionTagId(getInstructionTag(instruction))
+        getInstructionTagId(getInstructionTag(instruction))
   }
 }

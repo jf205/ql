@@ -28,6 +28,7 @@ private module Cached {
     forex(Throw ex | ex = m.getImplementation().getAnInstruction() | t = ex.getExpr().getType())
   }
 }
+
 import Cached
 
 pragma[noinline]
@@ -41,9 +42,7 @@ private predicate alwaysNullExpr(Expr expr) {
   or
   alwaysNullMethod(expr.(StaticCall).getTarget())
   or
-  forex(VariableUpdate vu | DefUse::variableUpdateUse(_, vu, expr) |
-    alwaysNullVariableUpdate(vu)
-  )
+  forex(VariableUpdate vu | DefUse::variableUpdateUse(_, vu, expr) | alwaysNullVariableUpdate(vu))
 }
 
 pragma[noinline]

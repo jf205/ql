@@ -198,3 +198,36 @@ def flow_through_type_test_if_no_class():
     else:
         SINK(t)
 
+def flow_in_iteration():
+    t = ITERABLE_SOURCE
+    for i in t:
+        i
+    return i
+
+def flow_in_generator():
+    seq = [SOURCE]
+    for i in seq:
+        yield i
+
+def flow_from_generator():
+    for x in flow_in_generator():
+        SINK(x)
+
+def const_eq_clears_taint():
+    tainted = SOURCE
+    if tainted == "safe":
+        SINK(tainted) # safe
+    SINK(tainted) # unsafe
+
+def const_eq_clears_taint2():
+    tainted = SOURCE
+    if tainted != "safe":
+        return
+    SINK(tainted) # safe
+
+def non_const_eq_preserves_taint(x):
+    tainted = SOURCE
+    if tainted == tainted:
+        SINK(tainted) # unsafe
+    if tainted == x:
+        SINK(tainted) # unsafe

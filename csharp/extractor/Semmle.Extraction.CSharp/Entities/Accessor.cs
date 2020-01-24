@@ -1,4 +1,5 @@
 using Microsoft.CodeAnalysis;
+using System.IO;
 using System.Linq;
 
 namespace Semmle.Extraction.CSharp.Entities
@@ -23,18 +24,18 @@ namespace Semmle.Extraction.CSharp.Entities
                 // But for properties/indexers that implement explicit interfaces, Roslyn
                 // does not properly populate `AssociatedSymbol`
                 var props = symbol.ContainingType.GetMembers().OfType<IPropertySymbol>();
-                props = props.Where(p => symbol.Equals(p.GetMethod) || symbol.Equals(p.SetMethod));
+                props = props.Where(p => SymbolEqualityComparer.Default.Equals(symbol, p.GetMethod) || SymbolEqualityComparer.Default.Equals(symbol, p.SetMethod));
                 return props.SingleOrDefault();
             }
         }
 
         public new Accessor OriginalDefinition => Create(Context, symbol.OriginalDefinition);
 
-        public override void Populate()
+        public override void Populate(TextWriter trapFile)
         {
-            PopulateMethod();
-            ExtractModifiers();
-            ContainingType.ExtractGenerics();
+            PopulateMethod(trapFile);
+            PopulateModifiers(trapFile);
+            ContainingType.PopulateGenerics();
 
             var prop = PropertySymbol;
             if (prop == null)
@@ -46,12 +47,12 @@ namespace Semmle.Extraction.CSharp.Entities
             var parent = Property.Create(Context, prop);
             int kind;
             Accessor unboundAccessor;
-            if (symbol.Equals(prop.GetMethod))
+            if (SymbolEqualityComparer.Default.Equals(symbol, prop.GetMethod))
             {
                 kind = 1;
                 unboundAccessor = Create(Context, prop.OriginalDefinition.GetMethod);
             }
-            else if (symbol.Equals(prop.SetMethod))
+            else if (SymbolEqualityComparer.Default.Equals(symbol, prop.SetMethod))
             {
                 kind = 2;
                 unboundAccessor = Create(Context, prop.OriginalDefinition.SetMethod);
@@ -62,16 +63,16 @@ namespace Semmle.Extraction.CSharp.Entities
                 return;
             }
 
-            Context.Emit(Tuples.accessors(this, kind, symbol.Name, parent, unboundAccessor));
+            trapFile.accessors(this, kind, symbol.Name, parent, unboundAccessor);
 
             foreach (var l in Locations)
-                Context.Emit(Tuples.accessor_location(this, l));
+                trapFile.accessor_location(this, l);
 
-            Overrides();
+            Overrides(trapFile);
 
             if (symbol.FromSource() && Block == null)
             {
-                Context.Emit(Tuples.compiler_generated(this));
+                trapFile.compiler_generated(this);
             }
         }
 

@@ -2,9 +2,9 @@
     @_namespace com.lgtm/java-queries
 + semmlecode-queries/AlertSuppression.ql
     @_namespace com.lgtm/java-queries
-+ semmlecode-queries/filters/ClassifyFiles.ql
++ semmlecode-queries/AlertSuppressionAnnotations.ql
     @_namespace com.lgtm/java-queries
-+ semmlecode-queries/filters/ImportAdditionalLibraries.ql
++ semmlecode-queries/filters/ClassifyFiles.ql
     @_namespace com.lgtm/java-queries
 
 @import "java-alerts-lgtm"

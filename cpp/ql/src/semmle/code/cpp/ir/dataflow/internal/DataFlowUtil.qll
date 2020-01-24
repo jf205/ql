@@ -4,6 +4,15 @@
 
 private import cpp
 private import semmle.code.cpp.ir.IR
+private import semmle.code.cpp.controlflow.IRGuards
+private import semmle.code.cpp.ir.ValueNumbering
+
+/**
+ * A newtype wrapper to prevent accidental casts between `Node` and
+ * `Instruction`. This ensures we can add `Node`s that are not `Instruction`s
+ * in the future.
+ */
+private newtype TIRDataFlowNode = MkIRDataFlowNode(Instruction i)
 
 /**
  * A node in a data flow graph.
@@ -12,14 +21,22 @@ private import semmle.code.cpp.ir.IR
  * variable. Such nodes are created with `DataFlow::exprNode`,
  * `DataFlow::parameterNode`, and `DataFlow::uninitializedNode` respectively.
  */
-class Node extends Instruction {
+class Node extends TIRDataFlowNode {
+  Instruction instr;
+
+  Node() { this = MkIRDataFlowNode(instr) }
+
   /**
    * INTERNAL: Do not use. Alternative name for `getFunction`.
    */
-  Function getEnclosingCallable() { result = this.getEnclosingFunction() }
+  Function getEnclosingCallable() { result = this.getFunction() }
+
+  Function getFunction() { result = instr.getEnclosingFunction() }
 
   /** Gets the type of this node. */
-  Type getType() { result = this.getResultType() }
+  Type getType() { result = instr.getResultType() }
+
+  Instruction asInstruction() { this = MkIRDataFlowNode(result) }
 
   /**
    * Gets the non-conversion expression corresponding to this node, if any. If
@@ -28,7 +45,7 @@ class Node extends Instruction {
    * expression.
    */
   Expr asExpr() {
-    result.getConversion*() = this.getConvertedResultExpression() and
+    result.getConversion*() = instr.getConvertedResultExpression() and
     not result instanceof Conversion
   }
 
@@ -36,21 +53,48 @@ class Node extends Instruction {
    * Gets the expression corresponding to this node, if any. The returned
    * expression may be a `Conversion`.
    */
-  Expr asConvertedExpr() { result = this.getConvertedResultExpression() }
+  Expr asConvertedExpr() { result = instr.getConvertedResultExpression() }
+
+  /** Gets the argument that defines this `DefinitionByReferenceNode`, if any. */
+  Expr asDefiningArgument() { result = this.(DefinitionByReferenceNode).getArgument() }
 
   /** Gets the parameter corresponding to this node, if any. */
-  Parameter asParameter() { result = this.(InitializeParameterInstruction).getParameter() }
+  Parameter asParameter() { result = instr.(InitializeParameterInstruction).getParameter() }
 
   /**
+   * DEPRECATED: See UninitializedNode.
+   *
    * Gets the uninitialized local variable corresponding to this node, if
    * any.
    */
-  LocalVariable asUninitialized() { result = this.(UninitializedInstruction).getLocalVariable() }
+  LocalVariable asUninitialized() { none() }
 
   /**
    * Gets an upper bound on the type of this node.
    */
   Type getTypeBound() { result = getType() }
+
+  /** Gets the location of this element. */
+  Location getLocation() { result = instr.getLocation() }
+
+  /**
+   * Holds if this element is at the specified location.
+   * The location spans column `startcolumn` of line `startline` to
+   * column `endcolumn` of line `endline` in file `filepath`.
+   * For more information, see
+   * [Locations](https://help.semmle.com/QL/learn-ql/ql/locations.html).
+   */
+  predicate hasLocationInfo(
+    string filepath, int startline, int startcolumn, int endline, int endcolumn
+  ) {
+    this.getLocation().hasLocationInfo(filepath, startline, startcolumn, endline, endcolumn)
+  }
+
+  string toString() {
+    // This predicate is overridden in subclasses. This default implementation
+    // does not use `Instruction.toString` because that's expensive to compute.
+    result = this.asInstruction().getOpcode().toString()
+  }
 }
 
 /**
@@ -72,25 +116,49 @@ class ExprNode extends Node {
    * expression may be a `Conversion`.
    */
   Expr getConvertedExpr() { result = this.asConvertedExpr() }
+
+  override string toString() { result = this.asConvertedExpr().toString() }
 }
 
 /**
  * The value of a parameter at function entry, viewed as a node in a data
  * flow graph.
  */
-class ParameterNode extends Node, InitializeParameterInstruction {
+class ParameterNode extends Node {
+  override InitializeParameterInstruction instr;
+
   /**
    * Holds if this node is the parameter of `c` at the specified (zero-based)
    * position. The implicit `this` parameter is considered to have index `-1`.
    */
-  predicate isParameterOf(Function f, int i) { f.getParameter(i) = getParameter() }
+  predicate isParameterOf(Function f, int i) { f.getParameter(i) = instr.getParameter() }
+
+  Parameter getParameter() { result = instr.getParameter() }
+
+  override string toString() { result = instr.getParameter().toString() }
+}
+
+private class ThisParameterNode extends Node {
+  override InitializeThisInstruction instr;
+
+  override string toString() { result = "this" }
 }
 
 /**
+ * DEPRECATED: Data flow was never an accurate way to determine what
+ * expressions might be uninitialized. It errs on the side of saying that
+ * everything is uninitialized, and this is even worse in the IR because the IR
+ * doesn't use syntactic hints to rule out variables that are definitely
+ * initialized.
+ *
  * The value of an uninitialized local variable, viewed as a node in a data
  * flow graph.
  */
-class UninitializedNode extends Node, UninitializedInstruction { }
+deprecated class UninitializedNode extends Node {
+  UninitializedNode() { none() }
+
+  LocalVariable getLocalVariable() { none() }
+}
 
 /**
  * A node associated with an object after an operation that might have
@@ -113,6 +181,48 @@ abstract class PostUpdateNode extends Node {
    */
   abstract Node getPreUpdateNode();
 }
+
+/**
+ * A node that represents the value of a variable after a function call that
+ * may have changed the variable because it's passed by reference.
+ *
+ * A typical example would be a call `f(&x)`. Firstly, there will be flow into
+ * `x` from previous definitions of `x`. Secondly, there will be a
+ * `DefinitionByReferenceNode` to represent the value of `x` after the call has
+ * returned. This node will have its `getArgument()` equal to `&x` and its
+ * `getVariableAccess()` equal to `x`.
+ */
+class DefinitionByReferenceNode extends Node {
+  override WriteSideEffectInstruction instr;
+
+  /** Gets the argument corresponding to this node. */
+  Expr getArgument() {
+    result = instr
+          .getPrimaryInstruction()
+          .(CallInstruction)
+          .getPositionalArgument(instr.getIndex())
+          .getUnconvertedResultExpression()
+    or
+    result = instr
+          .getPrimaryInstruction()
+          .(CallInstruction)
+          .getThisArgument()
+          .getUnconvertedResultExpression() and
+    instr.getIndex() = -1
+  }
+
+  /** Gets the parameter through which this value is assigned. */
+  Parameter getParameter() {
+    exists(CallInstruction ci | result = ci.getStaticCallTarget().getParameter(instr.getIndex()))
+  }
+}
+
+/**
+ * Gets the node corresponding to `instr`.
+ */
+Node instructionNode(Instruction instr) { result.asInstruction() = instr }
+
+DefinitionByReferenceNode definitionByReferenceNode(Expr e) { result.getArgument() = e }
 
 /**
  * Gets a `Node` corresponding to `e` or any of its conversions. There is no
@@ -141,11 +251,38 @@ UninitializedNode uninitializedNode(LocalVariable v) { result.getLocalVariable()
  * Holds if data flows from `nodeFrom` to `nodeTo` in exactly one local
  * (intra-procedural) step.
  */
-predicate localFlowStep(Node nodeFrom, Node nodeTo) {
-  nodeTo.(CopyInstruction).getSourceValue() = nodeFrom or
-  nodeTo.(PhiInstruction).getAnOperand().getDefinitionInstruction() = nodeFrom or
+predicate localFlowStep(Node nodeFrom, Node nodeTo) { simpleLocalFlowStep(nodeFrom, nodeTo) }
+
+/**
+ * INTERNAL: do not use.
+ *
+ * This is the local flow predicate that's used as a building block in global
+ * data flow. It may have less flow than the `localFlowStep` predicate.
+ */
+predicate simpleLocalFlowStep(Node nodeFrom, Node nodeTo) {
+  simpleInstructionLocalFlowStep(nodeFrom.asInstruction(), nodeTo.asInstruction())
+}
+
+private predicate simpleInstructionLocalFlowStep(Instruction iFrom, Instruction iTo) {
+  iTo.(CopyInstruction).getSourceValue() = iFrom or
+  iTo.(PhiInstruction).getAnOperand().getDef() = iFrom or
   // Treat all conversions as flow, even conversions between different numeric types.
-  nodeTo.(ConvertInstruction).getUnary() = nodeFrom
+  iTo.(ConvertInstruction).getUnary() = iFrom or
+  iTo.(InheritanceConversionInstruction).getUnary() = iFrom or
+  // A chi instruction represents a point where a new value (the _partial_
+  // operand) may overwrite an old value (the _total_ operand), but the alias
+  // analysis couldn't determine that it surely will overwrite every bit of it or
+  // that it surely will overwrite no bit of it.
+  //
+  // By allowing flow through the total operand, we ensure that flow is not lost
+  // due to shortcomings of the alias analysis. We may get false flow in cases
+  // where the data is indeed overwritten.
+  //
+  // Allowing flow through the partial operand would be more noisy, especially
+  // for variables that have escaped: for soundness, the IR has to assume that
+  // every write to an unknown address can affect every escaped variable, and
+  // this assumption shows up as data flowing through partial chi operands.
+  iTo.getAnOperand().(ChiTotalOperand).getDef() = iFrom
 }
 
 /**
@@ -153,3 +290,40 @@ predicate localFlowStep(Node nodeFrom, Node nodeTo) {
  * (intra-procedural) steps.
  */
 predicate localFlow(Node source, Node sink) { localFlowStep*(source, sink) }
+
+/**
+ * Holds if data can flow from `i1` to `i2` in zero or more
+ * local (intra-procedural) steps.
+ */
+predicate localInstructionFlow(Instruction e1, Instruction e2) {
+  localFlow(instructionNode(e1), instructionNode(e2))
+}
+
+/**
+ * Holds if data can flow from `e1` to `e2` in zero or more
+ * local (intra-procedural) steps.
+ */
+predicate localExprFlow(Expr e1, Expr e2) { localFlow(exprNode(e1), exprNode(e2)) }
+
+/**
+ * A guard that validates some instruction.
+ *
+ * To use this in a configuration, extend the class and provide a
+ * characteristic predicate precisely specifying the guard, and override
+ * `checks` to specify what is being validated and in which branch.
+ *
+ * It is important that all extending classes in scope are disjoint.
+ */
+class BarrierGuard extends IRGuardCondition {
+  /** Override this predicate to hold if this guard validates `instr` upon evaluating to `b`. */
+  abstract predicate checks(Instruction instr, boolean b);
+
+  /** Gets a node guarded by this guard. */
+  final Node getAGuardedNode() {
+    exists(ValueNumber value, boolean edge |
+      result.asInstruction() = value.getAnInstruction() and
+      this.checks(value.getAnInstruction(), edge) and
+      this.controls(result.asInstruction().getBlock(), edge)
+    )
+  }
+}

@@ -22,6 +22,7 @@ export interface AugmentedNode extends ts.Node {
     $symbol?: number;
     $resolvedSignature?: number;
     $overloadIndex?: number;
+    $declaredSignature?: number;
 }
 
 export type AugmentedPos = number;
@@ -64,6 +65,17 @@ function forEachNode(ast: ts.Node, callback: (node: ts.Node) => void) {
         callback(node);
     }
     visit(ast);
+}
+
+function tryGetTypeOfNode(typeChecker: ts.TypeChecker, node: AugmentedNode): ts.Type | null {
+    try {
+        return typeChecker.getTypeAtLocation(node);
+    } catch (e) {
+        let sourceFile = node.getSourceFile();
+        let { line, character } = sourceFile.getLineAndCharacterOfPosition(node.pos);
+        console.warn(`Could not compute type of ${ts.SyntaxKind[node.kind]} at ${sourceFile.fileName}:${line+1}:${character+1}`);
+        return null;
+    }
 }
 
 export function augmentAst(ast: AugmentedSourceFile, code: string, project: Project | null) {
@@ -195,9 +207,11 @@ export function augmentAst(ast: AugmentedSourceFile, code: string, project: Proj
                 let contextualType = isContextuallyTypedNode(node)
                     ? typeChecker.getContextualType(node)
                     : null;
-                let type = contextualType || typeChecker.getTypeAtLocation(node);
+                let type = contextualType || tryGetTypeOfNode(typeChecker, node);
                 if (type != null) {
-                    let id = typeTable.buildType(type);
+                    let parent = node.parent;
+                    let unfoldAlias = ts.isTypeAliasDeclaration(parent) && node === parent.type;
+                    let id = typeTable.buildType(type, unfoldAlias);
                     if (id != null) {
                         node.$type = id;
                     }
@@ -263,6 +277,17 @@ export function augmentAst(ast: AugmentedSourceFile, code: string, project: Proj
                     namePart.$symbol = typeTable.getSymbolId(symbol);
                 }
             }
+            if (ts.isFunctionLike(node)) {
+                let signature = typeChecker.getSignatureFromDeclaration(node);
+                if (signature != null) {
+                    let kind = ts.isConstructSignatureDeclaration(node) || ts.isConstructorDeclaration(node)
+                            ? ts.SignatureKind.Construct : ts.SignatureKind.Call;
+                    let id = typeTable.getSignatureId(kind, signature);
+                    if (id != null) {
+                        (node as AugmentedNode).$declaredSignature = id;
+                    }
+                }
+            }
         }
     }
 }
@@ -295,54 +320,61 @@ function isNamedNodeWithSymbol(node: ts.Node): node is NamedNodeWithSymbol {
  */
 function isTypedNode(node: ts.Node): boolean {
     switch (node.kind) {
-      case ts.SyntaxKind.ArrayLiteralExpression:
-      case ts.SyntaxKind.ArrowFunction:
-      case ts.SyntaxKind.AsExpression:
-      case ts.SyntaxKind.AwaitExpression:
-      case ts.SyntaxKind.BinaryExpression:
-      case ts.SyntaxKind.CallExpression:
-      case ts.SyntaxKind.ClassExpression:
-      case ts.SyntaxKind.CommaListExpression:
-      case ts.SyntaxKind.ConditionalExpression:
-      case ts.SyntaxKind.DeleteExpression:
-      case ts.SyntaxKind.ElementAccessExpression:
-      case ts.SyntaxKind.ExpressionStatement:
-      case ts.SyntaxKind.ExpressionWithTypeArguments:
-      case ts.SyntaxKind.FalseKeyword:
-      case ts.SyntaxKind.FunctionDeclaration:
-      case ts.SyntaxKind.FunctionExpression:
-      case ts.SyntaxKind.Identifier:
-      case ts.SyntaxKind.JsxExpression:
-      case ts.SyntaxKind.LiteralType:
-      case ts.SyntaxKind.NewExpression:
-      case ts.SyntaxKind.NonNullExpression:
-      case ts.SyntaxKind.NoSubstitutionTemplateLiteral:
-      case ts.SyntaxKind.NumericLiteral:
-      case ts.SyntaxKind.ObjectKeyword:
-      case ts.SyntaxKind.ObjectLiteralExpression:
-      case ts.SyntaxKind.OmittedExpression:
-      case ts.SyntaxKind.ParenthesizedExpression:
-      case ts.SyntaxKind.PartiallyEmittedExpression:
-      case ts.SyntaxKind.PostfixUnaryExpression:
-      case ts.SyntaxKind.PrefixUnaryExpression:
-      case ts.SyntaxKind.PropertyAccessExpression:
-      case ts.SyntaxKind.RegularExpressionLiteral:
-      case ts.SyntaxKind.StringLiteral:
-      case ts.SyntaxKind.TaggedTemplateExpression:
-      case ts.SyntaxKind.TemplateExpression:
-      case ts.SyntaxKind.TemplateHead:
-      case ts.SyntaxKind.TemplateMiddle:
-      case ts.SyntaxKind.TemplateSpan:
-      case ts.SyntaxKind.TemplateTail:
-      case ts.SyntaxKind.TrueKeyword:
-      case ts.SyntaxKind.TypeAssertionExpression:
-      case ts.SyntaxKind.TypeLiteral:
-      case ts.SyntaxKind.TypeOfExpression:
-      case ts.SyntaxKind.VoidExpression:
-      case ts.SyntaxKind.YieldExpression:
-        return true;
-      default:
-        return ts.isTypeNode(node);
+        case ts.SyntaxKind.ArrayLiteralExpression:
+        case ts.SyntaxKind.ArrowFunction:
+        case ts.SyntaxKind.AsExpression:
+        case ts.SyntaxKind.AwaitExpression:
+        case ts.SyntaxKind.BinaryExpression:
+        case ts.SyntaxKind.CallExpression:
+        case ts.SyntaxKind.ClassExpression:
+        case ts.SyntaxKind.ClassDeclaration:
+        case ts.SyntaxKind.CommaListExpression:
+        case ts.SyntaxKind.ConditionalExpression:
+        case ts.SyntaxKind.Constructor:
+        case ts.SyntaxKind.DeleteExpression:
+        case ts.SyntaxKind.ElementAccessExpression:
+        case ts.SyntaxKind.ExpressionStatement:
+        case ts.SyntaxKind.ExpressionWithTypeArguments:
+        case ts.SyntaxKind.FalseKeyword:
+        case ts.SyntaxKind.FunctionDeclaration:
+        case ts.SyntaxKind.FunctionExpression:
+        case ts.SyntaxKind.GetAccessor:
+        case ts.SyntaxKind.Identifier:
+        case ts.SyntaxKind.IndexSignature:
+        case ts.SyntaxKind.JsxExpression:
+        case ts.SyntaxKind.LiteralType:
+        case ts.SyntaxKind.MethodDeclaration:
+        case ts.SyntaxKind.MethodSignature:
+        case ts.SyntaxKind.NewExpression:
+        case ts.SyntaxKind.NonNullExpression:
+        case ts.SyntaxKind.NoSubstitutionTemplateLiteral:
+        case ts.SyntaxKind.NumericLiteral:
+        case ts.SyntaxKind.ObjectKeyword:
+        case ts.SyntaxKind.ObjectLiteralExpression:
+        case ts.SyntaxKind.OmittedExpression:
+        case ts.SyntaxKind.ParenthesizedExpression:
+        case ts.SyntaxKind.PartiallyEmittedExpression:
+        case ts.SyntaxKind.PostfixUnaryExpression:
+        case ts.SyntaxKind.PrefixUnaryExpression:
+        case ts.SyntaxKind.PropertyAccessExpression:
+        case ts.SyntaxKind.RegularExpressionLiteral:
+        case ts.SyntaxKind.SetAccessor:
+        case ts.SyntaxKind.StringLiteral:
+        case ts.SyntaxKind.TaggedTemplateExpression:
+        case ts.SyntaxKind.TemplateExpression:
+        case ts.SyntaxKind.TemplateHead:
+        case ts.SyntaxKind.TemplateMiddle:
+        case ts.SyntaxKind.TemplateSpan:
+        case ts.SyntaxKind.TemplateTail:
+        case ts.SyntaxKind.TrueKeyword:
+        case ts.SyntaxKind.TypeAssertionExpression:
+        case ts.SyntaxKind.TypeLiteral:
+        case ts.SyntaxKind.TypeOfExpression:
+        case ts.SyntaxKind.VoidExpression:
+        case ts.SyntaxKind.YieldExpression:
+            return true;
+        default:
+            return ts.isTypeNode(node);
     }
 }
 

@@ -66,11 +66,17 @@ class ObjectInternal extends TObject {
 
     /** Holds if `obj` is the result of calling `this` and `origin` is
      * the origin of `obj`.
+     *
+     * This is the context-insensitive version.
+     * Generally, if this holds for any object `obj` then `callResult/3` should never hold for that object.
      */
     abstract predicate callResult(ObjectInternal obj, CfgOrigin origin);
 
     /** Holds if `obj` is the result of calling `this` and `origin` is
      * the origin of `obj` with callee context `callee`.
+     *
+     * This is the context-sensitive version.
+     * Generally, if this holds for any object `obj` then `callResult/2` should never hold for that object.
      */
     abstract predicate callResult(PointsToContext callee, ObjectInternal obj, CfgOrigin origin);
 
@@ -155,11 +161,33 @@ class ObjectInternal extends TObject {
      */
     predicate functionAndOffset(CallableObjectInternal function, int offset) { none() }
 
-    /** Holds if this 'object' represents an entity that is inferred to exist
-     * but is missing from the database */
-    predicate isMissing() {
-        none()
+    /** Holds if this 'object' represents an entity that should be exposed to the legacy points_to API
+     * This should hold for almost all objects that do not have an underlying DB object representing their source,
+     * for example `super` objects and bound-method. This should not hold for objects that are inferred to exists by
+     * an import statements or the like, but which aren't in the database. */
+     /* This predicate can be removed when the legacy points_to API is removed. */
+    abstract predicate useOriginAsLegacyObject();
+
+    /** Gets the name of this of this object if it has a meaningful name.
+     * Note that the name of an object is not necessarily the name by which it is called
+     * For example the function named `posixpath.join` will be called `os.path.join`.
+     */
+    abstract string getName();
+
+    abstract predicate contextSensitiveCallee();
+
+    /** Gets the 'object' resulting from iterating over this object.
+     * Used in the context `for i in this:`. The result is the 'object'
+     * assigned to `i`.
+     */
+    abstract ObjectInternal getIterNext();
+
+    /** Holds if this value has the attribute `name` */
+    predicate hasAttribute(string name) {
+        this.(ObjectInternal).attribute(name, _, _)
     }
+
+    abstract predicate isNotSubscriptedType();
 
 }
 
@@ -240,6 +268,18 @@ class BuiltinOpaqueObjectInternal extends ObjectInternal, TBuiltinOpaqueObject {
 
     override int length() { none() }
 
+    override string getName() {
+        result = this.getBuiltin().getName()
+    }
+
+    override predicate contextSensitiveCallee() { none() }
+
+    override predicate useOriginAsLegacyObject() { none() }
+
+    override ObjectInternal getIterNext() { result = ObjectInternal::unknown() }
+
+    override predicate isNotSubscriptedType() { any() }
+
 }
 
 
@@ -314,6 +354,16 @@ class UnknownInternal extends ObjectInternal, TUnknown {
     pragma [noinline] override predicate binds(ObjectInternal instance, string name, ObjectInternal descriptor) { none() }
 
     override int length() { result = -1 }
+
+    override string getName() { none() }
+
+    override predicate contextSensitiveCallee() { none() }
+
+    override predicate useOriginAsLegacyObject() { none() }
+
+    override ObjectInternal getIterNext() { result = ObjectInternal::unknown() }
+
+    override predicate isNotSubscriptedType() { any() }
 
 }
 
@@ -390,6 +440,18 @@ class UndefinedInternal extends ObjectInternal, TUndefined {
     pragma [noinline] override predicate binds(ObjectInternal instance, string name, ObjectInternal descriptor) { none() }
 
     override int length() { none() }
+
+    override string getName() { none() }
+
+    override predicate useOriginAsLegacyObject() { none() }
+
+    /** Holds if this object requires context to determine the object resulting from a call to it.
+     * True for most callables. */
+    override predicate contextSensitiveCallee() { none() }
+
+    override ObjectInternal getIterNext() { none() }
+
+    override predicate isNotSubscriptedType() { any() }
 
 }
 
@@ -484,6 +546,99 @@ module ObjectInternal {
     ObjectInternal emptyTuple() {
         result.(BuiltinTupleObjectInternal).length() = 0
     }
+
+}
+
+class DecoratedFunction extends ObjectInternal, TDecoratedFunction {
+
+
+    CallNode getDecoratorCall() {
+        this = TDecoratedFunction(result)
+    }
+
+    override Builtin getBuiltin() {
+        none()
+    }
+
+    private ObjectInternal decoratedObject() {
+        PointsTo::pointsTo(this.getDecoratorCall().getArg(0), _, result, _)
+    }
+
+    override string getName() {
+        result = this.decoratedObject().getName()
+    }
+
+    override string toString() {
+        result = "Decorated " + this.decoratedObject().toString()
+        or
+        not exists(this.decoratedObject()) and result = "Decorated function"
+    }
+
+    override boolean booleanValue() { result = true }
+
+    override ClassDecl getClassDeclaration() {
+        none()
+    }
+
+    override boolean isClass() { result = false }
+
+    override ObjectInternal getClass() { result = TUnknownClass() }
+
+    override predicate introducedAt(ControlFlowNode node, PointsToContext context) {
+        none()
+    }
+
+    override predicate notTestableForEquality() { none() }
+
+    override predicate callResult(PointsToContext callee, ObjectInternal obj, CfgOrigin origin) {
+        none()
+    }
+
+    override predicate callResult(ObjectInternal obj, CfgOrigin origin) {
+        obj = ObjectInternal::unknown() and origin = CfgOrigin::unknown()
+    }
+
+    override ControlFlowNode getOrigin() {
+        result = this.getDecoratorCall()
+    }
+
+    override int intValue() {
+        none()
+    }
+
+    override string strValue() {
+        none()
+    }
+
+    override predicate calleeAndOffset(Function scope, int paramOffset) {
+        none()
+    }
+
+    override predicate attribute(string name, ObjectInternal value, CfgOrigin origin) {
+        none()
+    }
+
+    override predicate attributesUnknown() { none() }
+
+    override predicate subscriptUnknown() { none() }
+
+    override boolean isDescriptor() { result = false }
+
+    pragma [noinline] override predicate descriptorGetClass(ObjectInternal cls, ObjectInternal value, CfgOrigin origin) { none() }
+
+    pragma [noinline] override predicate descriptorGetInstance(ObjectInternal instance, ObjectInternal value, CfgOrigin origin) { none() }
+
+    pragma [noinline] override predicate binds(ObjectInternal instance, string name, ObjectInternal descriptor) { none() }
+
+    override int length() { none() }
+
+    override ObjectInternal getIterNext() { none() }
+
+    override predicate contextSensitiveCallee() { none() }
+
+    override predicate useOriginAsLegacyObject() { none() }
+
+    override predicate isNotSubscriptedType() { any() }
 
 }
 

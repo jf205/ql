@@ -31,35 +31,32 @@ private import semmle.code.csharp.frameworks.Test
 /** An expression that may be `null`. */
 class MaybeNullExpr extends Expr {
   MaybeNullExpr() {
-    this instanceof NullLiteral
+    G::Internal::nullValue(this)
     or
-    this.(ConditionalExpr).getThen() instanceof MaybeNullExpr
-    or
-    this.(ConditionalExpr).getElse() instanceof MaybeNullExpr
+    this instanceof AsExpr
     or
     this.(AssignExpr).getRValue() instanceof MaybeNullExpr
     or
     this.(Cast).getExpr() instanceof MaybeNullExpr
     or
-    this instanceof AsExpr
+    this = any(ConditionalExpr ce |
+        ce.getThen() instanceof MaybeNullExpr
+        or
+        ce.getElse() instanceof MaybeNullExpr
+      )
+    or
+    this.(NullCoalescingExpr).getRightOperand() instanceof MaybeNullExpr
   }
 }
 
 /** An expression that is always `null`. */
 class AlwaysNullExpr extends Expr {
   AlwaysNullExpr() {
-    this instanceof NullLiteral
+    G::Internal::nullValue(this)
     or
-    this = any(ConditionalExpr ce |
-        ce.getThen() instanceof AlwaysNullExpr and
-        ce.getElse() instanceof AlwaysNullExpr
-      )
+    exists(AlwaysNullExpr e | G::Internal::nullValueImpliedUnary(e, this))
     or
-    this.(AssignExpr).getRValue() instanceof AlwaysNullExpr
-    or
-    this.(Cast).getExpr() instanceof AlwaysNullExpr
-    or
-    this instanceof DefaultValueExpr and this.getType().isRefType()
+    exists(AlwaysNullExpr e1, AlwaysNullExpr e2 | G::Internal::nullValueImpliedBinary(e1, e2, this))
     or
     this = any(Ssa::Definition def |
         forex(Ssa::Definition u | u = def.getAnUltimateDefinition() | nullDef(u))
@@ -83,7 +80,7 @@ class NonNullExpr extends Expr {
   NonNullExpr() {
     G::Internal::nonNullValue(this)
     or
-    exists(NonNullExpr mid | G::Internal::nonNullValueImplied(mid, this))
+    exists(NonNullExpr mid | G::Internal::nonNullValueImpliedUnary(mid, this))
     or
     this instanceof G::NullGuardedExpr
     or
@@ -130,7 +127,7 @@ private predicate dereferenceAt(BasicBlock bb, int i, Ssa::Definition def, Deref
 private predicate exprImpliesSsaDef(
   Expr e, G::AbstractValue vExpr, Ssa::Definition def, G::AbstractValue vDef
 ) {
-  exists(G::Internal::Guard g | G::Internal::impliesSteps(e, vExpr, g, vDef) |
+  exists(G::Guard g | G::Internal::impliesSteps(e, vExpr, g, vDef) |
     g = def.getARead()
     or
     g = def.(Ssa::ExplicitDefinition).getADefinition().getTargetAccess()
@@ -146,7 +143,7 @@ private predicate ensureNotNullAt(BasicBlock bb, int i, Ssa::Definition def) {
     G::Internal::asserts(bb.getNode(i).getElement(), e, v)
   |
     exprImpliesSsaDef(e, v, def, nv) and
-    not nv.isNull()
+    nv.isNonNull()
   )
 }
 
@@ -179,7 +176,17 @@ private predicate isMaybeNullArgument(Ssa::ExplicitDefinition def, MaybeNullExpr
     pdef = def.getADefinition()
   |
     p = pdef.getParameter().getSourceDeclaration() and
-    p.getAnAssignedArgument() = arg and
+    arg = p.getAnAssignedArgument() and
+    not arg.getEnclosingCallable().getEnclosingCallable*() instanceof TestMethod
+  )
+}
+
+private predicate isNullDefaultArgument(Ssa::ExplicitDefinition def, AlwaysNullExpr arg) {
+  exists(AssignableDefinitions::ImplicitParameterDefinition pdef, Parameter p |
+    pdef = def.getADefinition()
+  |
+    p = pdef.getParameter().getSourceDeclaration() and
+    arg = p.getDefaultValue() and
     not arg.getEnclosingCallable().getEnclosingCallable*() instanceof TestMethod
   )
 }
@@ -206,6 +213,8 @@ private predicate defMaybeNull(Ssa::Definition def, string msg, Element reason) 
     then msg = "because of $@ null argument"
     else msg = "because of $@ potential null argument"
   )
+  or
+  isNullDefaultArgument(def, reason) and msg = "because the parameter has a null default value"
   or
   // If the source of a variable is `null` then the variable may be `null`
   exists(AssignableDefinition adef | adef = def.(Ssa::ExplicitDefinition).getADefinition() |
@@ -261,7 +270,7 @@ private predicate defNullImpliesStep(
     bb1.getLastNode() = getANullCheck(def1, s, nv).getAControlFlowNode()
   |
     bb2 = bb1.getASuccessorByType(s) and
-    not nv.isNull()
+    nv.isNonNull()
   )
 }
 
@@ -348,11 +357,8 @@ abstract class PathNode extends TPathNode {
 
 private class SourcePathNode extends PathNode, TSourcePathNode {
   private Ssa::Definition def;
-
   private string msg;
-
   private Element reason;
-
   private boolean isNullArgument;
 
   SourcePathNode() { this = TSourcePathNode(def, msg, reason, isNullArgument) }
@@ -388,7 +394,6 @@ private class SourcePathNode extends PathNode, TSourcePathNode {
 
 private class InternalPathNode extends PathNode, TInternalPathNode {
   private Ssa::Definition def;
-
   private BasicBlock bb;
 
   InternalPathNode() { this = TInternalPathNode(def, bb) }
@@ -408,11 +413,8 @@ private class InternalPathNode extends PathNode, TInternalPathNode {
 
 private class SinkPathNode extends PathNode, TSinkPathNode {
   private Ssa::Definition def;
-
   private BasicBlock bb;
-
   private int i;
-
   private Dereference d;
 
   SinkPathNode() { this = TSinkPathNode(def, bb, i, d) }
@@ -465,7 +467,7 @@ private predicate defReaches(Ssa::Definition def, ControlFlow::Node cfn, boolean
   (always = true or always = false)
   or
   exists(ControlFlow::Node mid | defReaches(def, mid, always) |
-    Ssa::Internal::adjacentReadPairSameVar(mid, cfn) and
+    Ssa::Internal::adjacentReadPairSameVar(_, mid, cfn) and
     not mid = any(Dereference d |
         if always = true
         then d.isAlwaysNull(def.getSourceVariable())

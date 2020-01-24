@@ -2,6 +2,8 @@ import python
 
 class KeyValuePair extends KeyValuePair_, DictDisplayItem {
 
+    /* syntax: Expr : Expr */
+
     override Location getLocation() {
         result = KeyValuePair_.super.getLocation()
     }
@@ -58,7 +60,7 @@ abstract class DictUnpackingOrKeyword extends DictItem {
     abstract Expr getValue();
 
     override string toString() {
-        none() 
+        result = "DictUnpackingOrKeyword with missing toString"
     }
 
 }
@@ -68,13 +70,15 @@ abstract class DictDisplayItem extends DictItem {
     abstract Expr getValue();
 
     override string toString() {
-        none() 
+        result = "DictDisplayItem with missing toString"
     }
 
 }
 
 /** A keyword argument in a call. For example `arg=expr` in `foo(0, arg=expr)` */
 class Keyword extends Keyword_, DictUnpackingOrKeyword  {
+
+    /* syntax: name = Expr */
 
     override Location getLocation() {
         result = Keyword_.super.getLocation()

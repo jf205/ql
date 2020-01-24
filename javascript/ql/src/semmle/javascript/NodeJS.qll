@@ -5,6 +5,14 @@ private import NodeModuleResolutionImpl
 
 /**
  * A Node.js module.
+ *
+ * Example:
+ *
+ * ```
+ * const fs = require('fs');
+ * for (var i=2;i<process.argv.length; ++i)
+ *   process.stdout.write(fs.readFileSync(process.argv[i], 'utf8'));
+ * ```
  */
 class NodeModule extends Module {
   NodeModule() {
@@ -146,14 +154,19 @@ private predicate moduleInFile(Module m, File f) { m.getFile() = f }
 
 /**
  * A `require` import.
+ *
+ * Example:
+ *
+ * ```
+ * require('fs')
+ * ```
  */
 class Require extends CallExpr, Import {
+  cached
   Require() {
-    exists(RequireVariable req |
-      this.getCallee() = req.getAnAccess() and
-      // `mjs` files explicitly disallow `require`
-      getFile().getExtension() != "mjs"
-    )
+    any(RequireVariable req).getAnAccess() = getCallee() and
+    // `mjs` files explicitly disallow `require`
+    not getFile().getExtension() = "mjs"
   }
 
   override PathExpr getImportedPath() { result = getArgument(0) }
@@ -255,7 +268,7 @@ private class RequirePath extends PathExprCandidate {
 private class ConstantRequirePathElement extends PathExprInModule, ConstantString {
   ConstantRequirePathElement() { this = any(RequirePath rp).getAPart() }
 
-  override string getValue() { result = this.getStringValue() }
+  override string getValue() { result = getStringValue() }
 }
 
 /** A `__dirname` path expression. */
@@ -304,7 +317,15 @@ private class JoinedPath extends PathExprInModule, @callexpr {
   }
 }
 
-/** A reference to the special `module` variable. */
+/**
+ * A reference to the special `module` variable.
+ *
+ * Example:
+ *
+ * ```
+ * module
+ * ```
+ */
 class ModuleAccess extends VarAccess {
   ModuleAccess() { exists(ModuleScope ms | this = ms.getVariable("module").getAnAccess()) }
 }

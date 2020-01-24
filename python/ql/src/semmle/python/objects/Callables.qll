@@ -11,9 +11,6 @@ private import semmle.python.types.Builtins
 
 abstract class CallableObjectInternal extends ObjectInternal {
 
-    /** Gets the name of this callable */
-    abstract string getName();
-
     /** Gets the scope of this callable if it has one */
     abstract Function getScope();
 
@@ -50,6 +47,9 @@ abstract class CallableObjectInternal extends ObjectInternal {
     override int intValue() { none() }
 
     override string strValue() { none() }
+
+    /* Callables aren't iterable */
+    override ObjectInternal getIterNext() { none() }
 
 }
 
@@ -158,6 +158,12 @@ class PythonFunctionObjectInternal extends CallableObjectInternal, TPythonFuncti
     override predicate functionAndOffset(CallableObjectInternal function, int offset) {
         function = this and offset = 0
     }
+
+    override predicate contextSensitiveCallee() { any() }
+
+    override predicate useOriginAsLegacyObject() { none() }
+
+    override predicate isNotSubscriptedType() { any() }
 
 }
 
@@ -270,12 +276,21 @@ class BuiltinFunctionObjectInternal extends CallableObjectInternal, TBuiltinFunc
     }
 
     override predicate neverReturns() {
-        this = Module::named("sys").attr("exit")
+        exists(ModuleObjectInternal sys |
+            sys.getName() = "sys" and
+            sys.attribute("exit", this, _)
+        )
     }
 
     override predicate functionAndOffset(CallableObjectInternal function, int offset) {
         function = this and offset = 0
     }
+
+    override predicate contextSensitiveCallee() { none() }
+
+    override predicate useOriginAsLegacyObject() { none() }
+
+    override predicate isNotSubscriptedType() { any() }
 
 }
 
@@ -367,6 +382,12 @@ class BuiltinMethodObjectInternal extends CallableObjectInternal, TBuiltinMethod
         function = this and offset = 0
     }
 
+    override predicate contextSensitiveCallee() { none() }
+
+    override predicate useOriginAsLegacyObject() { none() }
+
+    override predicate isNotSubscriptedType() { any() }
+
 }
 
 /** Class representing bound-methods.
@@ -422,7 +443,6 @@ class BoundMethodObjectInternal extends CallableObjectInternal, TBoundMethod {
         result = this.getFunction().getName()
     }
 
-
     override Function getScope() { 
         result = this.getFunction().getScope()
     }
@@ -453,8 +473,12 @@ class BoundMethodObjectInternal extends CallableObjectInternal, TBoundMethod {
         function = this.getFunction() and offset = 1
     }
 
+    override predicate useOriginAsLegacyObject() { any() }
+
+    override predicate contextSensitiveCallee() {
+        this.getFunction().contextSensitiveCallee()
+    }
+
+    override predicate isNotSubscriptedType() { any() }
+
 }
-
-
-
-

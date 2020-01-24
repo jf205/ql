@@ -47,12 +47,13 @@ cached newtype TObject =
     or
     /* Package objects */
     TPackageObject(Folder f) {
-        exists(moduleNameFromFile(f))
+        isPreferredModuleForName(f, _)
     }
     or
     /* Python module objects */
     TPythonModule(Module m) {
-        not m.isPackage() and not exists(SyntaxError se | se.getFile() = m.getFile())
+        not m.isPackage() and isPreferredModuleForName(m.getFile(), _) and
+        not exists(SyntaxError se | se.getFile() = m.getFile())
     }
     or
     /* `True` */
@@ -131,7 +132,7 @@ cached newtype TObject =
     /* An instance of `cls`, instantiated at `instantiation` given the `context`. */
     TSpecificInstance(ControlFlowNode instantiation, ClassObjectInternal cls, PointsToContext context) {
         PointsToInternal::pointsTo(instantiation.(CallNode).getFunction(), context, cls, _) and
-        cls.isSpecial() = false and cls.getClassDeclaration().callReturnsInstance()
+        cls.isSpecial() = false
         or
         literal_instantiation(instantiation, cls, context)
     }
@@ -176,6 +177,7 @@ cached newtype TObject =
     or
     /* Represents a tuple in the Python source */
     TPythonTuple(TupleNode origin, PointsToContext context) {
+        origin.isLoad() and
         context.appliesTo(origin)
     }
     or
@@ -191,6 +193,14 @@ cached newtype TObject =
     TProperty(CallNode call, Context ctx, CallableObjectInternal getter) {
         PointsToInternal::pointsTo(call.getFunction(), ctx, ObjectInternal::property(), _) and
         PointsToInternal::pointsTo(call.getArg(0), ctx, getter, _)
+    }
+    or
+    /* Represents the `setter` or `deleter` method of a property object. */
+    TPropertySetterOrDeleter(PropertyInternal property, string method) {
+        exists(AttrNode attr |
+            PointsToInternal::pointsTo(attr.getObject(method), _, property, _)
+        ) and
+        ( method = "setter" or method = "deleter" )
     }
     or
     /* Represents a dynamically created class */
@@ -221,6 +231,25 @@ cached newtype TObject =
             not common_module_name(modname + "." + attrname)
         )
     }
+    or
+    /* Opaque object representing the result of calling a decorator on a function that we don't understand */
+    TDecoratedFunction(CallNode call) {
+        call.isFunctionDecoratorCall()
+    }
+    or
+    /* Represents a subscript operation applied to a type. For type-hint analysis */
+    TSubscriptedType(ObjectInternal generic, ObjectInternal index) {
+        isType(generic) and
+        generic.isNotSubscriptedType() and
+        index.isNotSubscriptedType() and
+        Expressions::subscriptPartsPointsTo(_, _, generic, index)
+    }
+
+predicate isType(ObjectInternal t) {
+    t.isClass() = true
+    or
+    t.getOrigin().getEnclosingModule().getName().matches("%typing")
+}
 
 private predicate is_power_2(int n) {
     n = 1 or
@@ -247,6 +276,12 @@ predicate literal_instantiation(ControlFlowNode n, ClassObjectInternal cls, Poin
         n instanceof SetNode and cls = ObjectInternal::builtin("set")
         or
         n.getNode() instanceof ImaginaryLiteral and cls = ObjectInternal::builtin("complex")
+        or
+        n.getNode() instanceof ListComp and cls = ObjectInternal::builtin("list")
+        or
+        n.getNode() instanceof SetComp and cls = ObjectInternal::builtin("set")
+        or
+        n.getNode() instanceof DictComp and cls = ObjectInternal::builtin("dict")
     )
 }
 
@@ -332,9 +367,10 @@ predicate receiver(AttrNode instantiation, PointsToContext context, ObjectIntern
 pragma [noinline]
 private predicate self_parameter(ParameterDefinition def, PointsToContext context, PythonClassObjectInternal cls) {
     def.isSelf() and
+    /* Exclude the special parameter name `.0` which is used for unfolded comprehensions. */
+    def.getName() != ".0" and
     exists(Function scope |
         def.getScope() = scope and
-        def.isSelf() and
         context.isRuntime() and context.appliesToScope(scope) and
         scope.getScope() = cls.getScope() and
         concrete_class(cls) and
@@ -449,7 +485,7 @@ library class ClassDecl extends @py_object {
         result = this.getClass().getName()
     }
 
-    /** Whether this is a class whose instances we treat specially, rather than as a generic instance.
+    /** Whether this is a class whose instances must be treated specially, rather than as generic instances.
      */
     predicate isSpecial() {
         exists(string name |
@@ -458,11 +494,6 @@ library class ClassDecl extends @py_object {
             name = "super" or
             name = "bool" or
             name = "NoneType" or
-            name = "int" or
-            name = "long" or
-            name = "str" or
-            name = "bytes" or
-            name = "unicode" or
             name = "tuple" or
             name = "property" or
             name = "ClassMethod" or
@@ -470,8 +501,6 @@ library class ClassDecl extends @py_object {
             name = "MethodType" or
             name = "ModuleType"
         )
-        or
-        this = Builtin::builtin("float")
     }
 
     /** Holds if for class `C`, `C()` returns an instance of `C` */

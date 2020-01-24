@@ -13,12 +13,14 @@ import python
 private import semmle.python.pointsto.PointsTo
 private import semmle.python.pointsto.PointsToContext
 private import semmle.python.objects.TObject
-private import semmle.python.objects.ObjectInternal
 private import semmle.python.web.HttpConstants
+
+/* Make ObjectInternal visible to save extra imports in user code */
+import semmle.python.objects.ObjectInternal
 
 abstract class PointsToExtension extends @py_flow_node {
 
-    string toString() { none() }
+    string toString() { result = "PointsToExtension with missing toString" }
 
     abstract predicate pointsTo(Context context, ObjectInternal value, ControlFlowNode origin);
 
@@ -34,7 +36,7 @@ abstract class PointsToExtension extends @py_flow_node {
 /** DEPRECATED -- Use PointsToExtension instead */
 deprecated abstract class CustomPointsToFact extends @py_flow_node {
 
-    string toString() { none() }
+    string toString() { result = "CustomPointsToFact with missing toString" }
 
     abstract predicate pointsTo(Context context, Object value, ClassObject cls, ControlFlowNode origin);
 
@@ -126,6 +128,20 @@ class BottleRoutePointToExtension extends PointsToExtension {
 
 /* Python 3.6+ regex module constants */
 
+string short_flag(string flag) {
+    (flag = "ASCII" or
+     flag = "IGNORECASE" or
+     flag = "LOCALE" or
+     flag = "UNICODE" or
+     flag = "MULTILINE" or
+     flag = "TEMPLATE")
+    and result = flag.prefix(1)
+    or
+    flag = "DOTALL" and result = "S"
+    or
+    flag = "VERBOSE" and result = "X"
+}
+
 class ReModulePointToExtension extends PointsToExtension {
 
     string name;
@@ -137,12 +153,18 @@ class ReModulePointToExtension extends PointsToExtension {
     }
 
     override predicate pointsTo(Context context, ObjectInternal value, ControlFlowNode origin) {
-        exists(ModuleObjectInternal sre_constants, CfgOrigin orig |
+        exists(ModuleObjectInternal sre_constants, CfgOrigin orig, string flag |
+            (name = flag or name = short_flag(flag)) and
             sre_constants.getName() = "sre_constants" and
-            sre_constants.attribute("SRE_FLAG_" + name, value, orig) and
+            sre_constants.attribute("SRE_FLAG_" + flag, value, orig) and
             origin = orig.asCfgNodeOrHere(this)
         )
-        and context.appliesTo(this)
+        and pointsTo_helper(context)
+    }
+
+    pragma [noinline]
+    private predicate pointsTo_helper(Context context) {
+        context.appliesTo(this)
     }
 
 }
