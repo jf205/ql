@@ -65,6 +65,15 @@ predicate localAdditionalTaintStep(DataFlow::Node nodeFrom, DataFlow::Node nodeT
     // tracking. The flow from expression `x` into `x++` etc. is handled in the
     // case above.
     exprTo = DataFlow::getAnAccessToAssignedVariable(exprFrom.(PostfixCrementOperation))
+    or
+    // In `for (char c : s) { ... c ... }`, this rule propagates taint from `s`
+    // to `c`.
+    exists(RangeBasedForStmt rbf |
+      exprFrom = rbf.getRange() and
+      // It's guaranteed up to at least C++20 that the range-based for loop
+      // desugars to a variable with an initializer.
+      exprTo = rbf.getVariable().getInitializer().getExpr()
+    )
   )
   or
   // Taint can flow through modeled functions
@@ -132,6 +141,9 @@ private predicate exprToExprStep(Expr exprIn, Expr exprOut) {
       // dest_ptr = strdup(tainted_ptr)
       inModel.isParameterDeref(argInIndex) and
       exprIn = call.getArgument(argInIndex)
+      or
+      inModel.isParameter(argInIndex) and
+      exprIn = call.getArgument(argInIndex)
     )
   )
   or
@@ -172,6 +184,9 @@ private predicate exprToDefinitionByReferenceStep(Expr exprIn, Expr argOut) {
       // Taint flows from a pointer to a dereference, which DataFlow does not handle
       // memcpy(&dest_var, tainted_ptr, len)
       inModel.isParameterDeref(argInIndex) and
+      exprIn = call.getArgument(argInIndex)
+      or
+      inModel.isParameter(argInIndex) and
       exprIn = call.getArgument(argInIndex)
     )
   )

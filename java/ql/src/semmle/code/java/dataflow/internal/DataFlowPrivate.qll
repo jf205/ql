@@ -1,6 +1,6 @@
 private import java
 private import DataFlowUtil
-private import DataFlowImplCommon::Public
+private import DataFlowImplCommon
 private import DataFlowDispatch
 private import semmle.code.java.controlflow.Guards
 private import semmle.code.java.dataflow.SSA
@@ -100,8 +100,8 @@ private predicate variableCaptureStep(Node node1, ExprNode node2) {
     not exists(captured.getAUse()) and
     exists(SsaVariable capturedDef | capturedDef = captured.getAnUltimateDefinition() |
       capturedDef.(SsaImplicitInit).isParameterDefinition(node1.asParameter()) or
-      capturedDef.(SsaExplicitUpdate).getDefiningExpr().(VariableAssign).getSource() = node1
-            .asExpr() or
+      capturedDef.(SsaExplicitUpdate).getDefiningExpr().(VariableAssign).getSource() =
+        node1.asExpr() or
       capturedDef.(SsaExplicitUpdate).getDefiningExpr().(AssignOp) = node1.asExpr()
     )
   )
@@ -113,28 +113,20 @@ private predicate variableCaptureStep(Node node1, ExprNode node2) {
  */
 predicate jumpStep(Node node1, Node node2) {
   staticFieldStep(node1, node2) or
-  variableCaptureStep(node1, node2)
+  variableCaptureStep(node1, node2) or
+  variableCaptureStep(node1.(PostUpdateNode).getPreUpdateNode(), node2)
 }
 
 /**
  * Holds if `fa` is an access to an instance field that occurs as the
  * destination of an assignment of the value `src`.
  */
-predicate instanceFieldAssign(Expr src, FieldAccess fa) {
+private predicate instanceFieldAssign(Expr src, FieldAccess fa) {
   exists(AssignExpr a |
     a.getSource() = src and
     a.getDest() = fa and
     fa.getField() instanceof InstanceField
   )
-}
-
-/**
- * Gets an upper bound on the type of `f`.
- */
-private Type getFieldTypeBound(Field f) {
-  fieldTypeFlow(f, result, _)
-  or
-  not fieldTypeFlow(f, _, _) and result = f.getType()
 }
 
 private newtype TContent =
@@ -153,12 +145,6 @@ class Content extends TContent {
   predicate hasLocationInfo(string path, int sl, int sc, int el, int ec) {
     path = "" and sl = 0 and sc = 0 and el = 0 and ec = 0
   }
-
-  /** Gets the erased type of the object containing this content. */
-  abstract DataFlowType getContainerType();
-
-  /** Gets the erased type of this content. */
-  abstract DataFlowType getType();
 }
 
 private class FieldContent extends Content, TFieldContent {
@@ -173,26 +159,14 @@ private class FieldContent extends Content, TFieldContent {
   override predicate hasLocationInfo(string path, int sl, int sc, int el, int ec) {
     f.getLocation().hasLocationInfo(path, sl, sc, el, ec)
   }
-
-  override DataFlowType getContainerType() { result = getErasedRepr(f.getDeclaringType()) }
-
-  override DataFlowType getType() { result = getErasedRepr(getFieldTypeBound(f)) }
 }
 
 private class CollectionContent extends Content, TCollectionContent {
   override string toString() { result = "collection" }
-
-  override DataFlowType getContainerType() { none() }
-
-  override DataFlowType getType() { none() }
 }
 
 private class ArrayContent extends Content, TArrayContent {
   override string toString() { result = "array" }
-
-  override DataFlowType getContainerType() { none() }
-
-  override DataFlowType getType() { none() }
 }
 
 /**
@@ -222,11 +196,20 @@ predicate readStep(Node node1, Content f, Node node2) {
 }
 
 /**
+ * Holds if values stored inside content `c` are cleared at node `n`. For example,
+ * any value stored inside `f` is cleared at the pre-update node associated with `x`
+ * in `x.f = newValue`.
+ */
+predicate clearsContent(Node n, Content c) {
+  n = any(PostUpdateNode pun | storeStep(_, c, pun)).getPreUpdateNode()
+}
+
+/**
  * Gets a representative (boxed) type for `t` for the purpose of pruning
  * possible flow. A single type is used for all numeric types to account for
  * numeric conversions, and otherwise the erasure is used.
  */
-DataFlowType getErasedRepr(Type t) {
+private DataFlowType getErasedRepr(Type t) {
   exists(Type e | e = t.getErasure() |
     if e instanceof NumericOrCharType
     then result.(BoxedType).getPrimitiveType().getName() = "double"
@@ -235,7 +218,12 @@ DataFlowType getErasedRepr(Type t) {
       then result.(BoxedType).getPrimitiveType().getName() = "boolean"
       else result = e
   )
+  or
+  t instanceof NullType and result instanceof TypeObject
 }
+
+pragma[noinline]
+DataFlowType getNodeType(Node n) { result = getErasedRepr(n.getTypeBound()) }
 
 /** Gets a string representation of a type returned by `getErasedRepr`. */
 string ppReprType(Type t) {
@@ -322,3 +310,19 @@ predicate isUnreachableInCall(Node n, DataFlowCall call) {
     guard.controls(n.asExpr().getBasicBlock(), arg.getBooleanValue().booleanNot())
   )
 }
+
+int accessPathLimit() { result = 5 }
+
+/**
+ * Holds if `n` does not require a `PostUpdateNode` as it either cannot be
+ * modified or its modification cannot be observed, for example if it is a
+ * freshly created object that is not saved in a variable.
+ *
+ * This predicate is only used for consistency checks.
+ */
+predicate isImmutableOrUnobservable(Node n) {
+  n.getType() instanceof ImmutableType or n instanceof ImplicitVarargsArray
+}
+
+/** Holds if `n` should be hidden from path explanations. */
+predicate nodeIsHidden(Node n) { none() }

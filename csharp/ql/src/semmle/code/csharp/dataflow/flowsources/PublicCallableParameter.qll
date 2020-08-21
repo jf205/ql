@@ -3,12 +3,11 @@
  */
 
 import csharp
-private import semmle.code.csharp.frameworks.WCF
 
 /**
  * A parameter of a public callable, for example `p` in
  *
- * ```
+ * ```csharp
  * public void M(int p) {
  *   ...
  * }

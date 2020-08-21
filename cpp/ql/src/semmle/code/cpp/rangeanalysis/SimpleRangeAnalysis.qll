@@ -44,6 +44,7 @@
 
 import cpp
 private import RangeAnalysisUtils
+private import experimental.semmle.code.cpp.models.interfaces.SimpleRangeAnalysisExpr
 import RangeSSA
 import SimpleRangeAnalysisCached
 private import NanAnalysis
@@ -91,36 +92,213 @@ private float wideningUpperBounds(ArithmeticType t) {
   result = 1.0 / 0.0 // +Inf
 }
 
+/**
+ * Gets the value of the expression `e`, if it is a constant.
+ * This predicate also handles the case of constant variables initialized in different
+ * compilation units, which doesn't necessarily have a getValue() result from the extractor.
+ */
+private string getValue(Expr e) {
+  if exists(e.getValue())
+  then result = e.getValue()
+  else
+    /*
+     * It should be safe to propagate the initialization value to a variable if:
+     * The type of v is const, and
+     * The type of v is not volatile, and
+     * Either:
+     *   v is a local/global variable, or
+     *   v is a static member variable
+     */
+
+    exists(VariableAccess access, StaticStorageDurationVariable v |
+      not v.getUnderlyingType().isVolatile() and
+      v.getUnderlyingType().isConst() and
+      e = access and
+      v = access.getTarget() and
+      result = getValue(v.getAnAssignedValue())
+    )
+}
+
+/**
+ * A bitwise `&` expression in which both operands are unsigned, or are effectively
+ * unsigned due to being a non-negative constant.
+ */
+private class UnsignedBitwiseAndExpr extends BitwiseAndExpr {
+  UnsignedBitwiseAndExpr() {
+    (
+      getLeftOperand().getFullyConverted().getType().getUnderlyingType().(IntegralType).isUnsigned() or
+      getValue(getLeftOperand().getFullyConverted()).toInt() >= 0
+    ) and
+    (
+      getRightOperand()
+          .getFullyConverted()
+          .getType()
+          .getUnderlyingType()
+          .(IntegralType)
+          .isUnsigned() or
+      getValue(getRightOperand().getFullyConverted()).toInt() >= 0
+    )
+  }
+}
+
+/**
+ * Gets the floor of `v`, with additional logic to work around issues with
+ * large numbers.
+ */
+bindingset[v]
+float safeFloor(float v) {
+  // return the floor of v
+  v.abs() < 2.pow(31) and
+  result = v.floor()
+  or
+  // `floor()` doesn't work correctly on large numbers (since it returns an integer),
+  // so fall back to unrounded numbers at this scale.
+  not v.abs() < 2.pow(31) and
+  result = v
+}
+
+/** A `MulExpr` where exactly one operand is constant. */
+private class MulByConstantExpr extends MulExpr {
+  float constant;
+  Expr operand;
+
+  MulByConstantExpr() {
+    exists(Expr constantExpr |
+      this.hasOperands(constantExpr, operand) and
+      constant = getValue(constantExpr.getFullyConverted()).toFloat() and
+      not exists(getValue(operand.getFullyConverted()).toFloat())
+    )
+  }
+
+  /** Gets the value of the constant operand. */
+  float getConstant() { result = constant }
+
+  /** Gets the non-constant operand. */
+  Expr getOperand() { result = operand }
+}
+
+private class UnsignedMulExpr extends MulExpr {
+  UnsignedMulExpr() {
+    this.getType().(IntegralType).isUnsigned() and
+    // Avoid overlap. It should be slightly cheaper to analyze
+    // `MulByConstantExpr`.
+    not this instanceof MulByConstantExpr
+  }
+}
+
+/**
+ * Holds if `expr` is effectively a multiplication of `operand` with the
+ * positive constant `positive`.
+ */
+private predicate effectivelyMultipliesByPositive(Expr expr, Expr operand, float positive) {
+  operand = expr.(MulByConstantExpr).getOperand() and
+  positive = expr.(MulByConstantExpr).getConstant() and
+  positive >= 0.0 // includes positive zero
+  or
+  operand = expr.(UnaryPlusExpr).getOperand() and
+  positive = 1.0
+  or
+  operand = expr.(CommaExpr).getRightOperand() and
+  positive = 1.0
+  or
+  operand = expr.(StmtExpr).getResultExpr() and
+  positive = 1.0
+}
+
+/**
+ * Holds if `expr` is effectively a multiplication of `operand` with the
+ * negative constant `negative`.
+ */
+private predicate effectivelyMultipliesByNegative(Expr expr, Expr operand, float negative) {
+  operand = expr.(MulByConstantExpr).getOperand() and
+  negative = expr.(MulByConstantExpr).getConstant() and
+  negative < 0.0 // includes negative zero
+  or
+  operand = expr.(UnaryMinusExpr).getOperand() and
+  negative = -1.0
+}
+
+private class AssignMulByConstantExpr extends AssignMulExpr {
+  float constant;
+
+  AssignMulByConstantExpr() { constant = getValue(this.getRValue().getFullyConverted()).toFloat() }
+
+  float getConstant() { result = constant }
+}
+
+private class AssignMulByPositiveConstantExpr extends AssignMulByConstantExpr {
+  AssignMulByPositiveConstantExpr() { constant >= 0.0 }
+}
+
+private class AssignMulByNegativeConstantExpr extends AssignMulByConstantExpr {
+  AssignMulByNegativeConstantExpr() { constant < 0.0 }
+}
+
+private class UnsignedAssignMulExpr extends AssignMulExpr {
+  UnsignedAssignMulExpr() {
+    this.getType().(IntegralType).isUnsigned() and
+    // Avoid overlap. It should be slightly cheaper to analyze
+    // `AssignMulByConstantExpr`.
+    not this instanceof AssignMulByConstantExpr
+  }
+}
+
 /** Set of expressions which we know how to analyze. */
 private predicate analyzableExpr(Expr e) {
   // The type of the expression must be arithmetic. We reuse the logic in
   // `exprMinVal` to check this.
   exists(exprMinVal(e)) and
   (
-    exists(e.getValue().toFloat()) or
-    e instanceof UnaryPlusExpr or
-    e instanceof UnaryMinusExpr or
-    e instanceof MinExpr or
-    e instanceof MaxExpr or
-    e instanceof ConditionalExpr or
-    e instanceof AddExpr or
-    e instanceof SubExpr or
-    e instanceof AssignExpr or
-    e instanceof AssignAddExpr or
-    e instanceof AssignSubExpr or
-    e instanceof CrementOperation or
-    e instanceof RemExpr or
-    e instanceof CommaExpr or
-    e instanceof StmtExpr or
+    exists(getValue(e).toFloat())
+    or
+    effectivelyMultipliesByPositive(e, _, _)
+    or
+    effectivelyMultipliesByNegative(e, _, _)
+    or
+    e instanceof MinExpr
+    or
+    e instanceof MaxExpr
+    or
+    e instanceof ConditionalExpr
+    or
+    e instanceof AddExpr
+    or
+    e instanceof SubExpr
+    or
+    e instanceof UnsignedMulExpr
+    or
+    e instanceof AssignExpr
+    or
+    e instanceof AssignAddExpr
+    or
+    e instanceof AssignSubExpr
+    or
+    e instanceof UnsignedAssignMulExpr
+    or
+    e instanceof AssignMulByConstantExpr
+    or
+    e instanceof CrementOperation
+    or
+    e instanceof RemExpr
+    or
     // A conversion is analyzable, provided that its child has an arithmetic
     // type. (Sometimes the child is a reference type, and so does not get
     // any bounds.) Rather than checking whether the type of the child is
     // arithmetic, we reuse the logic that is already encoded in
     // `exprMinVal`.
-    exists(exprMinVal(e.(Conversion).getExpr())) or
+    exists(exprMinVal(e.(Conversion).getExpr()))
+    or
     // Also allow variable accesses, provided that they have SSA
     // information.
     exists(RangeSsaDefinition def, StackVariable v | e = def.getAUse(v))
+    or
+    e instanceof UnsignedBitwiseAndExpr
+    or
+    // `>>` by a constant
+    exists(getValue(e.(RShiftExpr).getRightOperand()))
+    or
+    // A modeled expression for range analysis
+    e instanceof SimpleRangeAnalysisExpr
   )
 }
 
@@ -141,25 +319,33 @@ private predicate defDependsOnDef(
   // Definitions with a defining value.
   exists(Expr expr | assignmentDef(def, v, expr) | exprDependsOnDef(expr, srcDef, srcVar))
   or
-  exists(AssignAddExpr assignAdd, RangeSsaDefinition nextDef |
+  exists(AssignAddExpr assignAdd |
     def = assignAdd and
-    assignAdd.getLValue() = nextDef.getAUse(v)
-  |
-    defDependsOnDef(nextDef, v, srcDef, srcVar) or
-    exprDependsOnDef(assignAdd.getRValue(), srcDef, srcVar)
+    def.getAVariable() = v and
+    exprDependsOnDef(assignAdd.getAnOperand(), srcDef, srcVar)
   )
   or
-  exists(AssignSubExpr assignSub, RangeSsaDefinition nextDef |
+  exists(AssignSubExpr assignSub |
     def = assignSub and
-    assignSub.getLValue() = nextDef.getAUse(v)
-  |
-    defDependsOnDef(nextDef, v, srcDef, srcVar) or
-    exprDependsOnDef(assignSub.getRValue(), srcDef, srcVar)
+    def.getAVariable() = v and
+    exprDependsOnDef(assignSub.getAnOperand(), srcDef, srcVar)
+  )
+  or
+  exists(UnsignedAssignMulExpr assignMul |
+    def = assignMul and
+    def.getAVariable() = v and
+    exprDependsOnDef(assignMul.getAnOperand(), srcDef, srcVar)
+  )
+  or
+  exists(AssignMulByConstantExpr assignMul |
+    def = assignMul and
+    def.getAVariable() = v and
+    exprDependsOnDef(assignMul.getLValue(), srcDef, srcVar)
   )
   or
   exists(CrementOperation crem |
     def = crem and
-    crem.getOperand() = v.getAnAccess() and
+    def.getAVariable() = v and
     exprDependsOnDef(crem.getOperand(), srcDef, srcVar)
   )
   or
@@ -172,12 +358,14 @@ private predicate defDependsOnDef(
  * the structure of `getLowerBoundsImpl` and `getUpperBoundsImpl`.
  */
 private predicate exprDependsOnDef(Expr e, RangeSsaDefinition srcDef, StackVariable srcVar) {
-  exists(UnaryMinusExpr negateExpr | e = negateExpr |
-    exprDependsOnDef(negateExpr.getOperand(), srcDef, srcVar)
+  exists(Expr operand |
+    effectivelyMultipliesByNegative(e, operand, _) and
+    exprDependsOnDef(operand, srcDef, srcVar)
   )
   or
-  exists(UnaryPlusExpr plusExpr | e = plusExpr |
-    exprDependsOnDef(plusExpr.getOperand(), srcDef, srcVar)
+  exists(Expr operand |
+    effectivelyMultipliesByPositive(e, operand, _) and
+    exprDependsOnDef(operand, srcDef, srcVar)
   )
   or
   exists(MinExpr minExpr | e = minExpr | exprDependsOnDef(minExpr.getAnOperand(), srcDef, srcVar))
@@ -192,6 +380,10 @@ private predicate exprDependsOnDef(Expr e, RangeSsaDefinition srcDef, StackVaria
   or
   exists(SubExpr subExpr | e = subExpr | exprDependsOnDef(subExpr.getAnOperand(), srcDef, srcVar))
   or
+  exists(UnsignedMulExpr mulExpr | e = mulExpr |
+    exprDependsOnDef(mulExpr.getAnOperand(), srcDef, srcVar)
+  )
+  or
   exists(AssignExpr addExpr | e = addExpr | exprDependsOnDef(addExpr.getRValue(), srcDef, srcVar))
   or
   exists(AssignAddExpr addExpr | e = addExpr |
@@ -202,23 +394,46 @@ private predicate exprDependsOnDef(Expr e, RangeSsaDefinition srcDef, StackVaria
     exprDependsOnDef(subExpr.getAnOperand(), srcDef, srcVar)
   )
   or
+  exists(UnsignedAssignMulExpr mulExpr | e = mulExpr |
+    exprDependsOnDef(mulExpr.getAnOperand(), srcDef, srcVar)
+  )
+  or
+  exists(AssignMulByConstantExpr mulExpr | e = mulExpr |
+    exprDependsOnDef(mulExpr.getLValue(), srcDef, srcVar)
+  )
+  or
   exists(CrementOperation crementExpr | e = crementExpr |
     exprDependsOnDef(crementExpr.getOperand(), srcDef, srcVar)
   )
   or
   exists(RemExpr remExpr | e = remExpr | exprDependsOnDef(remExpr.getAnOperand(), srcDef, srcVar))
   or
-  exists(CommaExpr commaExpr | e = commaExpr |
-    exprDependsOnDef(commaExpr.getRightOperand(), srcDef, srcVar)
-  )
-  or
-  exists(StmtExpr stmtExpr | e = stmtExpr |
-    exprDependsOnDef(stmtExpr.getResultExpr(), srcDef, srcVar)
-  )
-  or
   exists(Conversion convExpr | e = convExpr | exprDependsOnDef(convExpr.getExpr(), srcDef, srcVar))
   or
+  // unsigned `&`
+  exists(UnsignedBitwiseAndExpr andExpr |
+    andExpr = e and
+    exprDependsOnDef(andExpr.getAnOperand(), srcDef, srcVar)
+  )
+  or
+  // `>>` by a constant
+  exists(RShiftExpr rs |
+    rs = e and
+    exists(getValue(rs.getRightOperand())) and
+    exprDependsOnDef(rs.getLeftOperand(), srcDef, srcVar)
+  )
+  or
   e = srcDef.getAUse(srcVar)
+  or
+  // A modeled expression for range analysis
+  exists(SimpleRangeAnalysisExpr rae | rae = e |
+    rae.dependsOnDef(srcDef, srcVar)
+    or
+    exists(Expr child |
+      rae.dependsOnChild(child) and
+      exprDependsOnDef(child, srcDef, srcVar)
+    )
+  )
 }
 
 /**
@@ -282,9 +497,17 @@ private predicate assignmentDef(RangeSsaDefinition def, StackVariable v, Expr ex
   )
 }
 
-/** See comment above sourceDef. */
+/** See comment above assignmentDef. */
 private predicate analyzableDef(RangeSsaDefinition def, StackVariable v) {
-  assignmentDef(def, v, _) or defDependsOnDef(def, v, _, _)
+  assignmentDef(def, v, _)
+  or
+  analyzableExpr(def.(AssignOperation)) and
+  v = def.getAVariable()
+  or
+  analyzableExpr(def.(CrementOperation)) and
+  v = def.getAVariable()
+  or
+  phiDependsOnDef(def, v, _, _)
 }
 
 /**
@@ -337,13 +560,6 @@ private float addRoundingDownSmall(float x, float small) {
 }
 
 /**
- * Gets the truncated lower bounds of the fully converted expression.
- */
-private float getFullyConvertedLowerBounds(Expr expr) {
-  result = getTruncatedLowerBounds(expr.getFullyConverted())
-}
-
-/**
  * Gets the lower bounds of the expression.
  *
  * Most of the work of computing the lower bounds is done by
@@ -365,8 +581,8 @@ private float getTruncatedLowerBounds(Expr expr) {
   then
     // If the expression evaluates to a constant, then there is no
     // need to call getLowerBoundsImpl.
-    if exists(expr.getValue().toFloat())
-    then result = expr.getValue().toFloat()
+    if exists(getValue(expr).toFloat())
+    then result = getValue(expr).toFloat()
     else (
       // Some of the bounds computed by getLowerBoundsImpl might
       // overflow, so we replace invalid bounds with exprMinVal.
@@ -387,13 +603,6 @@ private float getTruncatedLowerBounds(Expr expr) {
     // expressions to just those with arithmetic types. There is no
     // need to return results for non-arithmetic expressions.
     result = exprMinVal(expr)
-}
-
-/**
- * Gets the truncated upper bounds of the fully converted expression.
- */
-private float getFullyConvertedUpperBounds(Expr expr) {
-  result = getTruncatedUpperBounds(expr.getFullyConverted())
 }
 
 /**
@@ -418,8 +627,8 @@ private float getTruncatedUpperBounds(Expr expr) {
   then
     // If the expression evaluates to a constant, then there is no
     // need to call getUpperBoundsImpl.
-    if exists(expr.getValue().toFloat())
-    then result = expr.getValue().toFloat()
+    if exists(getValue(expr).toFloat())
+    then result = getValue(expr).toFloat()
     else (
       // Some of the bounds computed by `getUpperBoundsImpl`
       // might overflow, so we replace invalid bounds with
@@ -463,15 +672,16 @@ deprecated predicate positive_overflow(Expr expr) { exprMightOverflowPositively(
 
 /** Only to be called by `getTruncatedLowerBounds`. */
 private float getLowerBoundsImpl(Expr expr) {
-  exists(UnaryPlusExpr plusExpr |
-    expr = plusExpr and
-    result = getFullyConvertedLowerBounds(plusExpr.getOperand())
+  exists(Expr operand, float operandLow, float positive |
+    effectivelyMultipliesByPositive(expr, operand, positive) and
+    operandLow = getFullyConvertedLowerBounds(operand) and
+    result = positive * operandLow
   )
   or
-  exists(UnaryMinusExpr negateExpr, float xHigh |
-    expr = negateExpr and
-    xHigh = getFullyConvertedUpperBounds(negateExpr.getOperand()) and
-    result = -xHigh
+  exists(Expr operand, float operandHigh, float negative |
+    effectivelyMultipliesByNegative(expr, operand, negative) and
+    operandHigh = getFullyConvertedUpperBounds(operand) and
+    result = negative * operandHigh
   )
   or
   exists(MinExpr minExpr |
@@ -526,6 +736,13 @@ private float getLowerBoundsImpl(Expr expr) {
     result = addRoundingDown(xLow, -yHigh)
   )
   or
+  exists(UnsignedMulExpr mulExpr, float xLow, float yLow |
+    expr = mulExpr and
+    xLow = getFullyConvertedLowerBounds(mulExpr.getLeftOperand()) and
+    yLow = getFullyConvertedLowerBounds(mulExpr.getRightOperand()) and
+    result = xLow * yLow
+  )
+  or
   exists(AssignExpr assign |
     expr = assign and
     result = getFullyConvertedLowerBounds(assign.getRValue())
@@ -543,6 +760,25 @@ private float getLowerBoundsImpl(Expr expr) {
     xLow = getFullyConvertedLowerBounds(subExpr.getLValue()) and
     yHigh = getFullyConvertedUpperBounds(subExpr.getRValue()) and
     result = addRoundingDown(xLow, -yHigh)
+  )
+  or
+  exists(UnsignedAssignMulExpr mulExpr, float xLow, float yLow |
+    expr = mulExpr and
+    xLow = getFullyConvertedLowerBounds(mulExpr.getLValue()) and
+    yLow = getFullyConvertedLowerBounds(mulExpr.getRValue()) and
+    result = xLow * yLow
+  )
+  or
+  exists(AssignMulByPositiveConstantExpr mulExpr, float xLow |
+    expr = mulExpr and
+    xLow = getFullyConvertedLowerBounds(mulExpr.getLValue()) and
+    result = xLow * mulExpr.getConstant()
+  )
+  or
+  exists(AssignMulByNegativeConstantExpr mulExpr, float xHigh |
+    expr = mulExpr and
+    xHigh = getFullyConvertedUpperBounds(mulExpr.getLValue()) and
+    result = xHigh * mulExpr.getConstant()
   )
   or
   exists(PrefixIncrExpr incrExpr, float xLow |
@@ -589,16 +825,6 @@ private float getLowerBoundsImpl(Expr expr) {
     )
   )
   or
-  exists(CommaExpr commaExpr |
-    expr = commaExpr and
-    result = getFullyConvertedLowerBounds(commaExpr.getRightOperand())
-  )
-  or
-  exists(StmtExpr stmtExpr |
-    expr = stmtExpr and
-    result = getFullyConvertedLowerBounds(stmtExpr.getResultExpr())
-  )
-  or
   // If the conversion is to an arithmetic type then we just return the
   // lower bound of the child. We do not need to handle truncation and
   // overflow here, because that is done in `getTruncatedLowerBounds`.
@@ -612,21 +838,44 @@ private float getLowerBoundsImpl(Expr expr) {
   or
   // Use SSA to get the lower bounds for a variable use.
   exists(RangeSsaDefinition def, StackVariable v | expr = def.getAUse(v) |
-    result = getDefLowerBounds(def, v)
+    result = getDefLowerBounds(def, v) and
+    // Not explicitly modeled by a SimpleRangeAnalysisExpr
+    not expr instanceof SimpleRangeAnalysisExpr
+  )
+  or
+  // unsigned `&` (tighter bounds may exist)
+  exists(UnsignedBitwiseAndExpr andExpr |
+    andExpr = expr and
+    result = 0.0
+  )
+  or
+  // `>>` by a constant
+  exists(RShiftExpr rsExpr, float left, int right |
+    rsExpr = expr and
+    left = getFullyConvertedLowerBounds(rsExpr.getLeftOperand()) and
+    right = getValue(rsExpr.getRightOperand().getFullyConverted()).toInt() and
+    result = safeFloor(left / 2.pow(right))
+  )
+  or
+  // A modeled expression for range analysis
+  exists(SimpleRangeAnalysisExpr rangeAnalysisExpr |
+    rangeAnalysisExpr = expr and
+    result = rangeAnalysisExpr.getLowerBounds()
   )
 }
 
 /** Only to be called by `getTruncatedUpperBounds`. */
 private float getUpperBoundsImpl(Expr expr) {
-  exists(UnaryPlusExpr plusExpr |
-    expr = plusExpr and
-    result = getFullyConvertedUpperBounds(plusExpr.getOperand())
+  exists(Expr operand, float operandHigh, float positive |
+    effectivelyMultipliesByPositive(expr, operand, positive) and
+    operandHigh = getFullyConvertedUpperBounds(operand) and
+    result = positive * operandHigh
   )
   or
-  exists(UnaryMinusExpr negateExpr, float xLow |
-    expr = negateExpr and
-    xLow = getFullyConvertedLowerBounds(negateExpr.getOperand()) and
-    result = -xLow
+  exists(Expr operand, float operandLow, float negative |
+    effectivelyMultipliesByNegative(expr, operand, negative) and
+    operandLow = getFullyConvertedLowerBounds(operand) and
+    result = negative * operandLow
   )
   or
   exists(MaxExpr maxExpr |
@@ -681,6 +930,13 @@ private float getUpperBoundsImpl(Expr expr) {
     result = addRoundingUp(xHigh, -yLow)
   )
   or
+  exists(UnsignedMulExpr mulExpr, float xHigh, float yHigh |
+    expr = mulExpr and
+    xHigh = getFullyConvertedUpperBounds(mulExpr.getLeftOperand()) and
+    yHigh = getFullyConvertedUpperBounds(mulExpr.getRightOperand()) and
+    result = xHigh * yHigh
+  )
+  or
   exists(AssignExpr assign |
     expr = assign and
     result = getFullyConvertedUpperBounds(assign.getRValue())
@@ -698,6 +954,25 @@ private float getUpperBoundsImpl(Expr expr) {
     xHigh = getFullyConvertedUpperBounds(subExpr.getLValue()) and
     yLow = getFullyConvertedLowerBounds(subExpr.getRValue()) and
     result = addRoundingUp(xHigh, -yLow)
+  )
+  or
+  exists(UnsignedAssignMulExpr mulExpr, float xHigh, float yHigh |
+    expr = mulExpr and
+    xHigh = getFullyConvertedUpperBounds(mulExpr.getLValue()) and
+    yHigh = getFullyConvertedUpperBounds(mulExpr.getRValue()) and
+    result = xHigh * yHigh
+  )
+  or
+  exists(AssignMulByPositiveConstantExpr mulExpr, float xHigh |
+    expr = mulExpr and
+    xHigh = getFullyConvertedUpperBounds(mulExpr.getLValue()) and
+    result = xHigh * mulExpr.getConstant()
+  )
+  or
+  exists(AssignMulByNegativeConstantExpr mulExpr, float xLow |
+    expr = mulExpr and
+    xLow = getFullyConvertedLowerBounds(mulExpr.getLValue()) and
+    result = xLow * mulExpr.getConstant()
   )
   or
   exists(PrefixIncrExpr incrExpr, float xHigh |
@@ -742,16 +1017,6 @@ private float getUpperBoundsImpl(Expr expr) {
     )
   )
   or
-  exists(CommaExpr commaExpr |
-    expr = commaExpr and
-    result = getFullyConvertedUpperBounds(commaExpr.getRightOperand())
-  )
-  or
-  exists(StmtExpr stmtExpr |
-    expr = stmtExpr and
-    result = getFullyConvertedUpperBounds(stmtExpr.getResultExpr())
-  )
-  or
   // If the conversion is to an arithmetic type then we just return the
   // upper bound of the child. We do not need to handle truncation and
   // overflow here, because that is done in `getTruncatedUpperBounds`.
@@ -765,7 +1030,31 @@ private float getUpperBoundsImpl(Expr expr) {
   or
   // Use SSA to get the upper bounds for a variable use.
   exists(RangeSsaDefinition def, StackVariable v | expr = def.getAUse(v) |
-    result = getDefUpperBounds(def, v)
+    result = getDefUpperBounds(def, v) and
+    // Not explicitly modeled by a SimpleRangeAnalysisExpr
+    not expr instanceof SimpleRangeAnalysisExpr
+  )
+  or
+  // unsigned `&` (tighter bounds may exist)
+  exists(UnsignedBitwiseAndExpr andExpr, float left, float right |
+    andExpr = expr and
+    left = getFullyConvertedUpperBounds(andExpr.getLeftOperand()) and
+    right = getFullyConvertedUpperBounds(andExpr.getRightOperand()) and
+    result = left.minimum(right)
+  )
+  or
+  // `>>` by a constant
+  exists(RShiftExpr rsExpr, float left, int right |
+    rsExpr = expr and
+    left = getFullyConvertedUpperBounds(rsExpr.getLeftOperand()) and
+    right = getValue(rsExpr.getRightOperand().getFullyConverted()).toInt() and
+    result = safeFloor(left / 2.pow(right))
+  )
+  or
+  // A modeled expression for range analysis
+  exists(SimpleRangeAnalysisExpr rangeAnalysisExpr |
+    rangeAnalysisExpr = expr and
+    result = rangeAnalysisExpr.getUpperBounds()
   )
 }
 
@@ -912,6 +1201,28 @@ private float getDefLowerBoundsImpl(RangeSsaDefinition def, StackVariable v) {
     result = addRoundingDown(lhsLB, -rhsUB)
   )
   or
+  exists(UnsignedAssignMulExpr assignMul, RangeSsaDefinition nextDef, float lhsLB, float rhsLB |
+    def = assignMul and
+    assignMul.getLValue() = nextDef.getAUse(v) and
+    lhsLB = getDefLowerBounds(nextDef, v) and
+    rhsLB = getFullyConvertedLowerBounds(assignMul.getRValue()) and
+    result = lhsLB * rhsLB
+  )
+  or
+  exists(AssignMulByPositiveConstantExpr assignMul, RangeSsaDefinition nextDef, float lhsLB |
+    def = assignMul and
+    assignMul.getLValue() = nextDef.getAUse(v) and
+    lhsLB = getDefLowerBounds(nextDef, v) and
+    result = lhsLB * assignMul.getConstant()
+  )
+  or
+  exists(AssignMulByNegativeConstantExpr assignMul, RangeSsaDefinition nextDef, float lhsUB |
+    def = assignMul and
+    assignMul.getLValue() = nextDef.getAUse(v) and
+    lhsUB = getDefUpperBounds(nextDef, v) and
+    result = lhsUB * assignMul.getConstant()
+  )
+  or
   exists(IncrementOperation incr, float newLB |
     def = incr and
     incr.getOperand() = v.getAnAccess() and
@@ -954,6 +1265,28 @@ private float getDefUpperBoundsImpl(RangeSsaDefinition def, StackVariable v) {
     result = addRoundingUp(lhsUB, -rhsLB)
   )
   or
+  exists(UnsignedAssignMulExpr assignMul, RangeSsaDefinition nextDef, float lhsUB, float rhsUB |
+    def = assignMul and
+    assignMul.getLValue() = nextDef.getAUse(v) and
+    lhsUB = getDefUpperBounds(nextDef, v) and
+    rhsUB = getFullyConvertedUpperBounds(assignMul.getRValue()) and
+    result = lhsUB * rhsUB
+  )
+  or
+  exists(AssignMulByPositiveConstantExpr assignMul, RangeSsaDefinition nextDef, float lhsUB |
+    def = assignMul and
+    assignMul.getLValue() = nextDef.getAUse(v) and
+    lhsUB = getDefUpperBounds(nextDef, v) and
+    result = lhsUB * assignMul.getConstant()
+  )
+  or
+  exists(AssignMulByNegativeConstantExpr assignMul, RangeSsaDefinition nextDef, float lhsLB |
+    def = assignMul and
+    assignMul.getLValue() = nextDef.getAUse(v) and
+    lhsLB = getDefLowerBounds(nextDef, v) and
+    result = lhsLB * assignMul.getConstant()
+  )
+  or
   exists(IncrementOperation incr, float newUB |
     def = incr and
     incr.getOperand() = v.getAnAccess() and
@@ -994,7 +1327,8 @@ private float getDefLowerBounds(RangeSsaDefinition def, StackVariable v) {
       // The new lower bound is from a recursive source, so we round
       // down to one of a limited set of values to prevent the
       // recursion from exploding.
-      result = max(float widenLB |
+      result =
+        max(float widenLB |
           widenLB = wideningLowerBounds(v.getUnspecifiedType()) and
           not widenLB > truncatedLB
         |
@@ -1023,7 +1357,8 @@ private float getDefUpperBounds(RangeSsaDefinition def, StackVariable v) {
       // The new upper bound is from a recursive source, so we round
       // up to one of a fixed set of values to prevent the recursion
       // from exploding.
-      result = min(float widenUB |
+      result =
+        min(float widenUB |
           widenUB = wideningUpperBounds(v.getUnspecifiedType()) and
           not widenUB < truncatedUB
         |
@@ -1349,3 +1684,25 @@ private module SimpleRangeAnalysisCached {
     convertedExprMightOverflowPositively(expr)
   }
 }
+
+/**
+ * INTERNAL: do not use. This module contains utilities for use in the
+ * experimental `SimpleRangeAnalysisExpr` module.
+ */
+module SimpleRangeAnalysisInternal {
+  /**
+   * Gets the truncated lower bounds of the fully converted expression.
+   */
+  float getFullyConvertedLowerBounds(Expr expr) {
+    result = getTruncatedLowerBounds(expr.getFullyConverted())
+  }
+
+  /**
+   * Gets the truncated upper bounds of the fully converted expression.
+   */
+  float getFullyConvertedUpperBounds(Expr expr) {
+    result = getTruncatedUpperBounds(expr.getFullyConverted())
+  }
+}
+
+private import SimpleRangeAnalysisInternal

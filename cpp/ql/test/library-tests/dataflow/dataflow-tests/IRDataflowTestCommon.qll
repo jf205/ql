@@ -10,7 +10,7 @@ import semmle.code.cpp.ir.IR
 class TestBarrierGuard extends DataFlow::BarrierGuard {
   TestBarrierGuard() { this.(CallInstruction).getStaticCallTarget().getName() = "guarded" }
 
-  override predicate checks(Instruction checked, boolean isTrue) {
+  override predicate checksInstr(Instruction checked, boolean isTrue) {
     checked = this.(CallInstruction).getPositionalArgument(0) and
     isTrue = true
   }
@@ -36,9 +36,27 @@ class TestAllocationConfig extends DataFlow::Configuration {
     )
   }
 
+  override predicate isAdditionalFlowStep(DataFlow::Node n1, DataFlow::Node n2) {
+    exists(GlobalOrNamespaceVariable var | var.getName().matches("flowTestGlobal%") |
+      writesVariable(n1.asInstruction(), var) and
+      var = n2.asVariable()
+      or
+      readsVariable(n2.asInstruction(), var) and
+      var = n1.asVariable()
+    )
+  }
+
   override predicate isBarrier(DataFlow::Node barrier) {
     barrier.asExpr().(VariableAccess).getTarget().hasName("barrier")
   }
 
   override predicate isBarrierGuard(DataFlow::BarrierGuard bg) { bg instanceof TestBarrierGuard }
+}
+
+private predicate readsVariable(LoadInstruction load, Variable var) {
+  load.getSourceAddress().(VariableAddressInstruction).getASTVariable() = var
+}
+
+private predicate writesVariable(StoreInstruction store, Variable var) {
+  store.getDestinationAddress().(VariableAddressInstruction).getASTVariable() = var
 }

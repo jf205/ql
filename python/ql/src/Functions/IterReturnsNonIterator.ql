@@ -12,20 +12,12 @@
 
 import python
 
-ClassObject return_type(FunctionObject f) {
-    exists(ControlFlowNode n, Return ret |
-        ret.getScope() = f.getFunction() and
-        ret.getValue() = n.getNode() and
-        n.refersTo(_, result, _)
-    )
-}
-
-from ClassObject iterable, FunctionObject iter, ClassObject iterator
+from ClassValue iterable, FunctionValue iter, ClassValue iterator
 where
-    iter = iterable.lookupAttribute("__iter__") and
-    iterator = return_type(iter) and
-    not iterator.isIterator()
+  iter = iterable.lookup("__iter__") and
+  iterator = iter.getAnInferredReturnType() and
+  not iterator.isIterator()
 select iterator,
-    "Class " + iterator.getName() +
-        " is returned as an iterator (by $@) but does not fully implement the iterator interface.",
-    iter, iter.getName()
+  "Class " + iterator.getName() +
+    " is returned as an iterator (by $@) but does not fully implement the iterator interface.",
+  iter, iter.getName()

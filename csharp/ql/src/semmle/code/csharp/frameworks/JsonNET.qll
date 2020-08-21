@@ -3,7 +3,7 @@
  */
 
 import csharp
-import semmle.code.csharp.dataflow.LibraryTypeDataFlow
+private import semmle.code.csharp.dataflow.LibraryTypeDataFlow
 
 /** Definitions relating to the `Json.NET` package. */
 module JsonNET {
@@ -50,7 +50,7 @@ module JsonNET {
     ) {
       // ToString methods
       c = getAToStringMethod() and
-      preservesValue = true and
+      preservesValue = false and
       source = any(CallableFlowSourceArg arg | arg.getArgumentIndex() = 0) and
       sink instanceof CallableFlowSinkReturn
       or
@@ -106,7 +106,7 @@ module JsonNET {
   private class SerializedMember extends TaintTracking::TaintedMember {
     SerializedMember() {
       // This member has a Json attribute
-      exists(Class attribute | attribute = this.(Attributable).getAnAttribute().getType() |
+      exists(Class attribute | attribute = this.getAnAttribute().getType() |
         attribute.hasName("JsonPropertyAttribute")
         or
         attribute.hasName("JsonDictionaryAttribute")
@@ -210,10 +210,11 @@ module JsonNET {
       preservesValue = false
       or
       // operator string
-      c = any(Operator op |
+      c =
+        any(Operator op |
           op.getDeclaringType() = this.getABaseType*() and op.getReturnType() instanceof StringType
         ) and
-      source = any(CallableFlowSourceArg arg | arg.getArgumentIndex() = 0) and
+      source.(CallableFlowSourceArg).getArgumentIndex() = 0 and
       sink instanceof CallableFlowSinkReturn and
       preservesValue = false
       or

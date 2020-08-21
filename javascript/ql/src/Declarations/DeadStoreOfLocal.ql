@@ -42,11 +42,11 @@ where
     access.isAmbient()
   ) and
   // don't flag function expressions
-  not exists(FunctionExpr fe | dead = fe.getId()) and
+  not exists(FunctionExpr fe | dead = fe.getIdentifier()) and
   // don't flag function declarations nested inside blocks or other compound statements;
   // their meaning is only partially specified by the standard
   not exists(FunctionDeclStmt fd, StmtContainer outer |
-    dead = fd.getId() and outer = fd.getEnclosingContainer()
+    dead = fd.getIdentifier() and outer = fd.getEnclosingContainer()
   |
     not fd = outer.getBody().(BlockStmt).getAStmt()
   ) and
@@ -63,8 +63,10 @@ where
   (
     // To avoid confusion about the meaning of "definition" and "declaration" we avoid
     // the term "definition" when the alert location is a variable declaration.
-    if dead instanceof VariableDeclarator
+    if
+      dead instanceof VariableDeclarator and
+      not exists(SsaImplicitInit init | init.getVariable().getSourceVariable() = v) // the variable is dead at the hoisted implicit initialization.
     then msg = "The initial value of " + v.getName() + " is unused, since it is always overwritten."
-    else msg = "This definition of " + v.getName() + " is useless, since its value is never read."
+    else msg = "The value assigned to " + v.getName() + " here is unused."
   )
 select dead, msg

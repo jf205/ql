@@ -12,21 +12,20 @@
 
 import python
 
-FunctionObject temporary_name_function(string mod, string function) {
+FunctionValue temporary_name_function(string mod, string function) {
+  (
+    mod = "tempfile" and function = "mktemp"
+    or
+    mod = "os" and
     (
-        mod = "tempfile" and function = "mktemp"
-        or
-        mod = "os" and
-        (
-            function = "tmpnam"
-            or
-            function = "tempnam"
-        )
-    ) and
-    result = ModuleObject::named(mod).attr(function)
+      function = "tmpnam"
+      or
+      function = "tempnam"
+    )
+  ) and
+  result = Module::named(mod).attr(function)
 }
 
 from Call c, string mod, string function
-where
-    temporary_name_function(mod, function).getACall().getNode() = c
+where temporary_name_function(mod, function).getACall().getNode() = c
 select c, "Call to deprecated function " + mod + "." + function + " may be insecure."

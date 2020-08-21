@@ -1,3 +1,7 @@
+/**
+ * Provides classes for modeling variables and their declarations.
+ */
+
 import semmle.code.cpp.Element
 import semmle.code.cpp.exprs.Access
 import semmle.code.cpp.Initializer
@@ -28,6 +32,8 @@ private import semmle.code.cpp.internal.ResolveClass
  * can have multiple declarations.
  */
 class Variable extends Declaration, @variable {
+  override string getAPrimaryQlClass() { result = "Variable" }
+
   /** Gets the initializer of this variable, if any. */
   Initializer getInitializer() { result.getDeclaration() = this }
 
@@ -124,10 +130,7 @@ class Variable extends Declaration, @variable {
     or
     exists(AssignExpr ae | ae.getLValue().(Access).getTarget() = this and result = ae.getRValue())
     or
-    exists(AggregateLiteral l |
-      this.getDeclaringType() = l.getType() and
-      result = l.getChild(this.(Field).getInitializationOrder())
-    )
+    exists(ClassAggregateLiteral l | result = l.getFieldExpr(this))
   }
 
   /**
@@ -187,7 +190,7 @@ class Variable extends Declaration, @variable {
 class VariableDeclarationEntry extends DeclarationEntry, @var_decl {
   override Variable getDeclaration() { result = getVariable() }
 
-  override string getCanonicalQLClass() { result = "VariableDeclarationEntry" }
+  override string getAPrimaryQlClass() { result = "VariableDeclarationEntry" }
 
   /**
    * Gets the variable which is being declared or defined.
@@ -246,7 +249,7 @@ class VariableDeclarationEntry extends DeclarationEntry, @var_decl {
 class ParameterDeclarationEntry extends VariableDeclarationEntry {
   ParameterDeclarationEntry() { param_decl_bind(underlyingElement(this), _, _) }
 
-  override string getCanonicalQLClass() { result = "ParameterDeclarationEntry" }
+  override string getAPrimaryQlClass() { result = "ParameterDeclarationEntry" }
 
   /**
    * Gets the function declaration or definition which this parameter
@@ -261,23 +264,33 @@ class ParameterDeclarationEntry extends VariableDeclarationEntry {
    */
   int getIndex() { param_decl_bind(underlyingElement(this), result, _) }
 
+  private string getAnonymousParameterDescription() {
+    not exists(getName()) and
+    exists(string idx |
+      idx =
+        ((getIndex() + 1).toString() + "th")
+            .replaceAll("1th", "1st")
+            .replaceAll("2th", "2nd")
+            .replaceAll("3th", "3rd")
+            .replaceAll("11st", "11th")
+            .replaceAll("12nd", "12th")
+            .replaceAll("13rd", "13th") and
+      if exists(getCanonicalName())
+      then result = "declaration of " + getCanonicalName() + " as anonymous " + idx + " parameter"
+      else result = "declaration of " + idx + " parameter"
+    )
+  }
+
   override string toString() {
-    if exists(getName())
-    then result = super.toString()
-    else
-      exists(string idx |
-        idx = ((getIndex() + 1).toString() + "th")
-              .replaceAll("1th", "1st")
-              .replaceAll("2th", "2nd")
-              .replaceAll("3th", "3rd")
-              .replaceAll("11st", "11th")
-              .replaceAll("12nd", "12th")
-              .replaceAll("13rd", "13th")
-      |
-        if exists(getCanonicalName())
-        then result = "declaration of " + getCanonicalName() + " as anonymous " + idx + " parameter"
-        else result = "declaration of " + idx + " parameter"
-      )
+    isDefinition() and
+    result = "definition of " + getName()
+    or
+    not isDefinition() and
+    if getName() = getCanonicalName()
+    then result = "declaration of " + getName()
+    else result = "declaration of " + getCanonicalName() + " as " + getName()
+    or
+    result = getAnonymousParameterDescription()
   }
 
   /**
@@ -312,7 +325,7 @@ class ParameterDeclarationEntry extends VariableDeclarationEntry {
  */
 class LocalScopeVariable extends Variable, @localscopevariable {
   /** Gets the function to which this variable belongs. */
-  /*abstract*/ Function getFunction() { none() }
+  Function getFunction() { none() } // overridden in subclasses
 }
 
 /**
@@ -350,6 +363,8 @@ class StackVariable extends LocalScopeVariable {
  * A local variable can be declared by a `DeclStmt` or a `ConditionDeclExpr`.
  */
 class LocalVariable extends LocalScopeVariable, @localvariable {
+  override string getAPrimaryQlClass() { result = "LocalVariable" }
+
   override string getName() { localvariables(underlyingElement(this), _, result) }
 
   override Type getType() { localvariables(underlyingElement(this), unresolveElement(result), _) }
@@ -360,6 +375,59 @@ class LocalVariable extends LocalScopeVariable, @localvariable {
     exists(ConditionDeclExpr e | e.getVariable() = this and e.getEnclosingFunction() = result)
   }
 }
+
+/**
+ * A variable whose contents always have static storage duration. This can be a
+ * global variable, a namespace variable, a static local variable, or a static
+ * member variable.
+ */
+class StaticStorageDurationVariable extends Variable {
+  StaticStorageDurationVariable() {
+    this instanceof GlobalOrNamespaceVariable
+    or
+    this.(LocalVariable).isStatic()
+    or
+    this.(MemberVariable).isStatic()
+  }
+
+  /**
+   * Holds if the initializer for this variable is evaluated at runtime.
+   */
+  predicate hasDynamicInitialization() {
+    runtimeExprInStaticInitializer(this.getInitializer().getExpr())
+  }
+}
+
+/**
+ * Holds if `e` is an expression in a static initializer that must be evaluated
+ * at run time. This predicate computes "is non-const" instead of "is const"
+ * since computing "is const" for an aggregate literal with many children would
+ * either involve recursion through `forall` on those children or an iteration
+ * through the rank numbers of the children, both of which can be slow.
+ */
+private predicate runtimeExprInStaticInitializer(Expr e) {
+  inStaticInitializer(e) and
+  if e instanceof AggregateLiteral // in sync with the cast in `inStaticInitializer`
+  then runtimeExprInStaticInitializer(e.getAChild())
+  else not e.getFullyConverted().isConstant()
+}
+
+/**
+ * Holds if `e` is the initializer of a `StaticStorageDurationVariable`, either
+ * directly or below some top-level `AggregateLiteral`s.
+ */
+private predicate inStaticInitializer(Expr e) {
+  exists(StaticStorageDurationVariable var | e = var.getInitializer().getExpr())
+  or
+  // The cast to `AggregateLiteral` ensures we only compute what'll later be
+  // needed by `runtimeExprInStaticInitializer`.
+  inStaticInitializer(e.getParent().(AggregateLiteral))
+}
+
+/**
+ * A C++ local variable declared as `static`.
+ */
+class StaticLocalVariable extends LocalVariable, StaticStorageDurationVariable { }
 
 /**
  * A C/C++ variable which has global scope or namespace scope. For example the
@@ -395,6 +463,8 @@ class NamespaceVariable extends GlobalOrNamespaceVariable {
   NamespaceVariable() {
     exists(Namespace n | namespacembrs(unresolveElement(n), underlyingElement(this)))
   }
+
+  override string getAPrimaryQlClass() { result = "NamespaceVariable" }
 }
 
 /**
@@ -414,6 +484,8 @@ class NamespaceVariable extends GlobalOrNamespaceVariable {
  */
 class GlobalVariable extends GlobalOrNamespaceVariable {
   GlobalVariable() { not this instanceof NamespaceVariable }
+
+  override string getAPrimaryQlClass() { result = "GlobalVariable" }
 }
 
 /**
@@ -432,6 +504,8 @@ class GlobalVariable extends GlobalOrNamespaceVariable {
  */
 class MemberVariable extends Variable, @membervariable {
   MemberVariable() { this.isMember() }
+
+  override string getAPrimaryQlClass() { result = "MemberVariable" }
 
   /** Holds if this member is private. */
   predicate isPrivate() { this.hasSpecifier("private") }
@@ -508,7 +582,7 @@ class TemplateVariable extends Variable {
  *   float a;
  * }
  *
- * template<type T>
+ * template<typename T>
  * void myTemplateFunction() {
  *   T b;
  * }

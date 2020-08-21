@@ -1,3 +1,8 @@
+/**
+ * Provides classes for modeling bitwise operations such as `~`, `<<`, `&` and
+ * `|`.
+ */
+
 import semmle.code.cpp.exprs.Expr
 
 /**
@@ -14,9 +19,9 @@ class UnaryBitwiseOperation extends UnaryOperation, @un_bitwise_op_expr { }
 class ComplementExpr extends UnaryBitwiseOperation, @complementexpr {
   override string getOperator() { result = "~" }
 
-  override int getPrecedence() { result = 15 }
+  override int getPrecedence() { result = 16 }
 
-  override string getCanonicalQLClass() { result = "ComplementExpr" }
+  override string getAPrimaryQlClass() { result = "ComplementExpr" }
 }
 
 /**
@@ -33,9 +38,9 @@ class BinaryBitwiseOperation extends BinaryOperation, @bin_bitwise_op_expr { }
 class LShiftExpr extends BinaryBitwiseOperation, @lshiftexpr {
   override string getOperator() { result = "<<" }
 
-  override int getPrecedence() { result = 11 }
+  override int getPrecedence() { result = 12 }
 
-  override string getCanonicalQLClass() { result = "LShiftExpr" }
+  override string getAPrimaryQlClass() { result = "LShiftExpr" }
 }
 
 /**
@@ -47,9 +52,9 @@ class LShiftExpr extends BinaryBitwiseOperation, @lshiftexpr {
 class RShiftExpr extends BinaryBitwiseOperation, @rshiftexpr {
   override string getOperator() { result = ">>" }
 
-  override int getPrecedence() { result = 11 }
+  override int getPrecedence() { result = 12 }
 
-  override string getCanonicalQLClass() { result = "RShiftExpr" }
+  override string getAPrimaryQlClass() { result = "RShiftExpr" }
 }
 
 /**
@@ -63,7 +68,7 @@ class BitwiseAndExpr extends BinaryBitwiseOperation, @andexpr {
 
   override int getPrecedence() { result = 8 }
 
-  override string getCanonicalQLClass() { result = "BitwiseAndExpr" }
+  override string getAPrimaryQlClass() { result = "BitwiseAndExpr" }
 }
 
 /**
@@ -77,7 +82,7 @@ class BitwiseOrExpr extends BinaryBitwiseOperation, @orexpr {
 
   override int getPrecedence() { result = 6 }
 
-  override string getCanonicalQLClass() { result = "BitwiseOrExpr" }
+  override string getAPrimaryQlClass() { result = "BitwiseOrExpr" }
 }
 
 /**
@@ -91,5 +96,5 @@ class BitwiseXorExpr extends BinaryBitwiseOperation, @xorexpr {
 
   override int getPrecedence() { result = 7 }
 
-  override string getCanonicalQLClass() { result = "BitwiseXorExpr" }
+  override string getAPrimaryQlClass() { result = "BitwiseXorExpr" }
 }

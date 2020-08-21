@@ -1,3 +1,7 @@
+/**
+ * Provides a class that models parameters to functions.
+ */
+
 import semmle.code.cpp.Location
 import semmle.code.cpp.Declaration
 private import semmle.code.cpp.internal.ResolveClass
@@ -45,7 +49,7 @@ class Parameter extends LocalScopeVariable, @parameter {
     result = "p#" + this.getIndex().toString()
   }
 
-  override string getCanonicalQLClass() { result = "Parameter" }
+  override string getAPrimaryQlClass() { result = "Parameter" }
 
   /**
    * Gets the name of this parameter, including it's type.
@@ -163,5 +167,9 @@ class Parameter extends LocalScopeVariable, @parameter {
  * An `int` that is a parameter index for some function.  This is needed for binding in certain cases.
  */
 class ParameterIndex extends int {
-  ParameterIndex() { exists(Parameter p | this = p.getIndex()) }
+  ParameterIndex() {
+    exists(Parameter p | this = p.getIndex()) or
+    exists(Call c | exists(c.getArgument(this))) or // permit indexing varargs
+    this = -1 // used for `this`
+  }
 }

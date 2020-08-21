@@ -1,5 +1,11 @@
 import SSAConstructionInternal
-private import SSAConstructionImports
+private import SSAConstructionImports as Imports
+private import Imports::Opcode
+private import Imports::OperandTag
+private import Imports::Overlap
+private import Imports::TInstruction
+private import Imports::RawIR as RawIR
+private import SSAInstructions
 private import NewIR
 
 private class OldBlock = Reachability::ReachableBlock;
@@ -10,52 +16,45 @@ import Cached
 
 cached
 private module Cached {
+  cached
+  predicate hasPhiInstructionCached(
+    OldInstruction blockStartInstr, Alias::MemoryLocation defLocation
+  ) {
+    exists(OldBlock oldBlock |
+      definitionHasPhiNode(defLocation, oldBlock) and
+      blockStartInstr = oldBlock.getFirstInstruction()
+    )
+  }
+
+  cached
+  predicate hasChiInstructionCached(OldInstruction primaryInstruction) {
+    hasChiNode(_, primaryInstruction)
+  }
+
+  cached
+  predicate hasUnreachedInstructionCached(IRFunction irFunc) {
+    exists(OldInstruction oldInstruction |
+      irFunc = oldInstruction.getEnclosingIRFunction() and
+      Reachability::isInfeasibleInstructionSuccessor(oldInstruction, _)
+    )
+  }
+
+  class TStageInstruction =
+    TRawInstruction or TPhiInstruction or TChiInstruction or TUnreachedInstruction;
+
+  cached
+  predicate hasInstruction(TStageInstruction instr) {
+    instr instanceof TRawInstruction and instr instanceof OldInstruction
+    or
+    instr instanceof TPhiInstruction
+    or
+    instr instanceof TChiInstruction
+    or
+    instr instanceof TUnreachedInstruction
+  }
+
   private IRBlock getNewBlock(OldBlock oldBlock) {
     result.getFirstInstruction() = getNewInstruction(oldBlock.getFirstInstruction())
-  }
-
-  cached
-  predicate functionHasIR(Language::Function func) {
-    exists(OldIR::IRFunction irFunc | irFunc.getFunction() = func)
-  }
-
-  cached
-  OldInstruction getOldInstruction(Instruction instr) { instr = WrappedInstruction(result) }
-
-  private IRVariable getNewIRVariable(OldIR::IRVariable var) {
-    // This is just a type cast. Both classes derive from the same newtype.
-    result = var
-  }
-
-  cached
-  newtype TInstruction =
-    WrappedInstruction(OldInstruction oldInstruction) {
-      not oldInstruction instanceof OldIR::PhiInstruction
-    } or
-    Phi(OldBlock block, Alias::MemoryLocation defLocation) {
-      definitionHasPhiNode(defLocation, block)
-    } or
-    Chi(OldInstruction oldInstruction) {
-      not oldInstruction instanceof OldIR::PhiInstruction and
-      hasChiNode(_, oldInstruction)
-    } or
-    Unreached(Language::Function function) {
-      exists(OldInstruction oldInstruction |
-        function = oldInstruction.getEnclosingFunction() and
-        Reachability::isInfeasibleInstructionSuccessor(oldInstruction, _)
-      )
-    }
-
-  cached
-  predicate hasTempVariable(
-    Language::Function func, Language::AST ast, TempVariableTag tag, Language::LanguageType type
-  ) {
-    exists(OldIR::IRTempVariable var |
-      var.getEnclosingFunction() = func and
-      var.getAST() = ast and
-      var.getTag() = tag and
-      var.getLanguageType() = type
-    )
   }
 
   cached
@@ -63,6 +62,27 @@ private module Cached {
     exists(Alias::getResultMemoryLocation(getOldInstruction(instruction))) or
     instruction instanceof PhiInstruction or // Phis always have modeled results
     instruction instanceof ChiInstruction // Chis always have modeled results
+  }
+
+  cached
+  predicate hasConflatedMemoryResult(Instruction instruction) {
+    instruction instanceof AliasedDefinitionInstruction
+    or
+    instruction.getOpcode() instanceof Opcode::InitializeNonLocal
+    or
+    // Chi instructions track virtual variables, and therefore a chi instruction is
+    // conflated if it's associated with the aliased virtual variable.
+    exists(OldInstruction oldInstruction | instruction = getChi(oldInstruction) |
+      Alias::getResultMemoryLocation(oldInstruction).getVirtualVariable() instanceof
+        Alias::AliasedVirtualVariable
+    )
+    or
+    // Phi instructions track locations, and therefore a phi instruction is
+    // conflated if it's associated with a conflated location.
+    exists(Alias::MemoryLocation location |
+      instruction = getPhi(_, location) and
+      not exists(location.getAllocation())
+    )
   }
 
   cached
@@ -84,62 +104,49 @@ private module Cached {
     oldOperand instanceof OldIR::NonPhiMemoryOperand and
     exists(
       OldBlock useBlock, int useRank, Alias::MemoryLocation useLocation,
-      Alias::MemoryLocation defLocation, OldBlock defBlock, int defRank, int defOffset
+      Alias::MemoryLocation defLocation, OldBlock defBlock, int defRank, int defOffset,
+      Alias::MemoryLocation actualDefLocation
     |
       useLocation = Alias::getOperandMemoryLocation(oldOperand) and
       hasUseAtRank(useLocation, useBlock, useRank, oldInstruction) and
       definitionReachesUse(useLocation, defBlock, defRank, useBlock, useRank) and
       hasDefinitionAtRank(useLocation, defLocation, defBlock, defRank, defOffset) and
-      instr = getDefinitionOrChiInstruction(defBlock, defOffset, defLocation, _) and
-      overlap = Alias::getOverlap(defLocation, useLocation)
+      instr = getDefinitionOrChiInstruction(defBlock, defOffset, defLocation, actualDefLocation) and
+      overlap = Alias::getOverlap(actualDefLocation, useLocation)
     )
   }
 
   cached
-  Instruction getMemoryOperandDefinition(
+  private Instruction getMemoryOperandDefinition0(
     Instruction instruction, MemoryOperandTag tag, Overlap overlap
   ) {
     exists(OldInstruction oldInstruction, OldIR::NonPhiMemoryOperand oldOperand |
       oldInstruction = getOldInstruction(instruction) and
       oldOperand = oldInstruction.getAnOperand() and
       tag = oldOperand.getOperandTag() and
-      (
-        (
-          if exists(Alias::getOperandMemoryLocation(oldOperand))
-          then hasMemoryOperandDefinition(oldInstruction, oldOperand, overlap, result)
-          else (
-            result = instruction.getEnclosingIRFunction().getUnmodeledDefinitionInstruction() and
-            overlap instanceof MustTotallyOverlap
-          )
-        )
-        or
-        // Connect any definitions that are not being modeled in SSA to the
-        // `UnmodeledUse` instruction.
-        exists(OldInstruction oldDefinition |
-          instruction instanceof UnmodeledUseInstruction and
-          tag instanceof UnmodeledUseOperandTag and
-          oldDefinition = oldOperand.getAnyDef() and
-          not exists(Alias::getResultMemoryLocation(oldDefinition)) and
-          result = getNewInstruction(oldDefinition) and
-          overlap instanceof MustTotallyOverlap
-        )
-      )
+      hasMemoryOperandDefinition(oldInstruction, oldOperand, overlap, result)
     )
     or
-    instruction = Chi(getOldInstruction(result)) and
+    instruction = getChi(getOldInstruction(result)) and
     tag instanceof ChiPartialOperandTag and
     overlap instanceof MustExactlyOverlap
-    or
-    exists(IRFunction f |
-      tag instanceof UnmodeledUseOperandTag and
-      result = f.getUnmodeledDefinitionInstruction() and
-      instruction = f.getUnmodeledUseInstruction() and
-      overlap instanceof MustTotallyOverlap
-    )
     or
     tag instanceof ChiTotalOperandTag and
     result = getChiInstructionTotalOperand(instruction) and
     overlap instanceof MustExactlyOverlap
+  }
+
+  cached
+  Instruction getMemoryOperandDefinition(
+    Instruction instruction, MemoryOperandTag tag, Overlap overlap
+  ) {
+    // getMemoryOperandDefinition0 currently has a bug where it can match with multiple overlaps.
+    // This predicate ensures that the chosen overlap is the most conservative if there's any doubt.
+    result = getMemoryOperandDefinition0(instruction, tag, overlap) and
+    not (
+      overlap instanceof MustExactlyOverlap and
+      exists(MustTotallyOverlap o | exists(getMemoryOperandDefinition0(instruction, tag, o)))
+    )
   }
 
   /**
@@ -164,13 +171,15 @@ private module Cached {
 
   pragma[noopt]
   cached
-  Instruction getPhiOperandDefinition(Phi instr, IRBlock newPredecessorBlock, Overlap overlap) {
+  Instruction getPhiOperandDefinition(
+    PhiInstruction instr, IRBlock newPredecessorBlock, Overlap overlap
+  ) {
     exists(
       Alias::MemoryLocation defLocation, Alias::MemoryLocation useLocation, OldBlock phiBlock,
       OldBlock predBlock, OldBlock defBlock, int defOffset, Alias::MemoryLocation actualDefLocation
     |
       hasPhiOperandDefinition(defLocation, useLocation, phiBlock, predBlock, defBlock, defOffset) and
-      instr = Phi(phiBlock, useLocation) and
+      instr = getPhi(phiBlock, useLocation) and
       newPredecessorBlock = getNewBlock(predBlock) and
       result = getDefinitionOrChiInstruction(defBlock, defOffset, defLocation, actualDefLocation) and
       overlap = Alias::getOverlap(actualDefLocation, useLocation)
@@ -183,7 +192,7 @@ private module Cached {
       Alias::VirtualVariable vvar, OldInstruction oldInstr, Alias::MemoryLocation defLocation,
       OldBlock defBlock, int defRank, int defOffset, OldBlock useBlock, int useRank
     |
-      chiInstr = Chi(oldInstr) and
+      chiInstr = getChi(oldInstr) and
       vvar = Alias::getResultMemoryLocation(oldInstr).getVirtualVariable() and
       hasDefinitionAtRank(vvar, defLocation, defBlock, defRank, defOffset) and
       hasUseAtRank(vvar, useBlock, useRank, oldInstr) and
@@ -195,19 +204,9 @@ private module Cached {
   cached
   Instruction getPhiInstructionBlockStart(PhiInstruction instr) {
     exists(OldBlock oldBlock |
-      instr = Phi(oldBlock, _) and
+      instr = getPhi(oldBlock, _) and
       result = getNewInstruction(oldBlock.getFirstInstruction())
     )
-  }
-
-  cached
-  Language::Expr getInstructionConvertedResultExpression(Instruction instruction) {
-    result = getOldInstruction(instruction).getConvertedResultExpression()
-  }
-
-  cached
-  Language::Expr getInstructionUnconvertedResultExpression(Instruction instruction) {
-    result = getOldInstruction(instruction).getUnconvertedResultExpression()
   }
 
   /*
@@ -220,20 +219,20 @@ private module Cached {
   Instruction getInstructionSuccessor(Instruction instruction, EdgeKind kind) {
     if hasChiNode(_, getOldInstruction(instruction))
     then
-      result = Chi(getOldInstruction(instruction)) and
+      result = getChi(getOldInstruction(instruction)) and
       kind instanceof GotoEdge
     else (
       exists(OldInstruction oldInstruction |
         oldInstruction = getOldInstruction(instruction) and
         (
           if Reachability::isInfeasibleInstructionSuccessor(oldInstruction, kind)
-          then result = Unreached(instruction.getEnclosingFunction())
+          then result = unreachedInstruction(instruction.getEnclosingIRFunction())
           else result = getNewInstruction(oldInstruction.getSuccessor(kind))
         )
       )
       or
       exists(OldInstruction oldInstruction |
-        instruction = Chi(oldInstruction) and
+        instruction = getChi(oldInstruction) and
         result = getNewInstruction(oldInstruction.getSuccessor(kind))
       )
     )
@@ -252,139 +251,73 @@ private module Cached {
       // `oldInstruction`, in which case the back edge should come out of the
       // chi node instead.
       if hasChiNode(_, oldInstruction)
-      then instruction = Chi(oldInstruction)
+      then instruction = getChi(oldInstruction)
       else instruction = getNewInstruction(oldInstruction)
     )
   }
 
   cached
-  Language::AST getInstructionAST(Instruction instruction) {
-    exists(OldInstruction oldInstruction |
-      instruction = WrappedInstruction(oldInstruction)
-      or
-      instruction = Chi(oldInstruction)
-    |
-      result = oldInstruction.getAST()
+  Language::AST getInstructionAST(Instruction instr) {
+    result = getOldInstruction(instr).getAST()
+    or
+    exists(RawIR::Instruction blockStartInstr |
+      instr = phiInstruction(blockStartInstr, _) and
+      result = blockStartInstr.getAST()
     )
     or
-    exists(OldBlock block |
-      instruction = Phi(block, _) and
-      result = block.getFirstInstruction().getAST()
+    exists(RawIR::Instruction primaryInstr |
+      instr = chiInstruction(primaryInstr) and
+      result = primaryInstr.getAST()
     )
     or
-    instruction = Unreached(result)
+    exists(IRFunctionBase irFunc |
+      instr = unreachedInstruction(irFunc) and result = irFunc.getFunction()
+    )
   }
 
   cached
-  Language::LanguageType getInstructionResultType(Instruction instruction) {
-    exists(OldInstruction oldInstruction |
-      instruction = WrappedInstruction(oldInstruction) and
-      result = oldInstruction.getResultLanguageType()
+  Language::LanguageType getInstructionResultType(Instruction instr) {
+    result = instr.(RawIR::Instruction).getResultLanguageType()
+    or
+    exists(Alias::MemoryLocation defLocation |
+      instr = phiInstruction(_, defLocation) and
+      result = defLocation.getType()
     )
     or
-    exists(OldInstruction oldInstruction, Alias::VirtualVariable vvar |
-      instruction = Chi(oldInstruction) and
-      hasChiNode(vvar, oldInstruction) and
+    exists(Instruction primaryInstr, Alias::VirtualVariable vvar |
+      instr = chiInstruction(primaryInstr) and
+      hasChiNode(vvar, primaryInstr) and
       result = vvar.getType()
     )
     or
-    exists(Alias::MemoryLocation location |
-      instruction = Phi(_, location) and
-      result = location.getType()
+    instr = unreachedInstruction(_) and result = Language::getVoidType()
+  }
+
+  cached
+  Opcode getInstructionOpcode(Instruction instr) {
+    result = getOldInstruction(instr).getOpcode()
+    or
+    instr = phiInstruction(_, _) and result instanceof Opcode::Phi
+    or
+    instr = chiInstruction(_) and result instanceof Opcode::Chi
+    or
+    instr = unreachedInstruction(_) and result instanceof Opcode::Unreached
+  }
+
+  cached
+  IRFunctionBase getInstructionEnclosingIRFunction(Instruction instr) {
+    result = getOldInstruction(instr).getEnclosingIRFunction()
+    or
+    exists(OldInstruction blockStartInstr |
+      instr = phiInstruction(blockStartInstr, _) and
+      result = blockStartInstr.getEnclosingIRFunction()
     )
     or
-    instruction = Unreached(_) and
-    result = Language::getVoidType()
-  }
-
-  cached
-  Opcode getInstructionOpcode(Instruction instruction) {
-    exists(OldInstruction oldInstruction |
-      instruction = WrappedInstruction(oldInstruction) and
-      result = oldInstruction.getOpcode()
+    exists(OldInstruction primaryInstr |
+      instr = chiInstruction(primaryInstr) and result = primaryInstr.getEnclosingIRFunction()
     )
     or
-    instruction instanceof Chi and
-    result instanceof Opcode::Chi
-    or
-    instruction instanceof Phi and
-    result instanceof Opcode::Phi
-    or
-    instruction instanceof Unreached and
-    result instanceof Opcode::Unreached
-  }
-
-  cached
-  IRFunction getInstructionEnclosingIRFunction(Instruction instruction) {
-    exists(OldInstruction oldInstruction |
-      instruction = WrappedInstruction(oldInstruction)
-      or
-      instruction = Chi(oldInstruction)
-    |
-      result.getFunction() = oldInstruction.getEnclosingFunction()
-    )
-    or
-    exists(OldBlock block |
-      instruction = Phi(block, _) and
-      result.getFunction() = block.getEnclosingFunction()
-    )
-    or
-    instruction = Unreached(result.getFunction())
-  }
-
-  cached
-  IRVariable getInstructionVariable(Instruction instruction) {
-    result = getNewIRVariable(getOldInstruction(instruction)
-            .(OldIR::VariableInstruction)
-            .getIRVariable())
-  }
-
-  cached
-  Language::Field getInstructionField(Instruction instruction) {
-    result = getOldInstruction(instruction).(OldIR::FieldInstruction).getField()
-  }
-
-  cached
-  int getInstructionIndex(Instruction instruction) {
-    result = getOldInstruction(instruction).(OldIR::IndexedInstruction).getIndex()
-  }
-
-  cached
-  Language::Function getInstructionFunction(Instruction instruction) {
-    result = getOldInstruction(instruction).(OldIR::FunctionInstruction).getFunctionSymbol()
-  }
-
-  cached
-  string getInstructionConstantValue(Instruction instruction) {
-    result = getOldInstruction(instruction).(OldIR::ConstantValueInstruction).getValue()
-  }
-
-  cached
-  Language::BuiltInOperation getInstructionBuiltInOperation(Instruction instruction) {
-    result = getOldInstruction(instruction)
-          .(OldIR::BuiltInOperationInstruction)
-          .getBuiltInOperation()
-  }
-
-  cached
-  Language::LanguageType getInstructionExceptionType(Instruction instruction) {
-    result = getOldInstruction(instruction).(OldIR::CatchByTypeInstruction).getExceptionType()
-  }
-
-  cached
-  int getInstructionElementSize(Instruction instruction) {
-    result = getOldInstruction(instruction).(OldIR::PointerArithmeticInstruction).getElementSize()
-  }
-
-  cached
-  predicate getInstructionInheritance(
-    Instruction instruction, Language::Class baseClass, Language::Class derivedClass
-  ) {
-    exists(OldIR::InheritanceConversionInstruction oldInstr |
-      oldInstr = getOldInstruction(instruction) and
-      baseClass = oldInstr.getBaseClass() and
-      derivedClass = oldInstr.getDerivedClass()
-    )
+    instr = unreachedInstruction(result)
   }
 
   cached
@@ -395,13 +328,21 @@ private module Cached {
     )
     or
     exists(OldIR::Instruction oldInstruction |
-      instruction = Chi(oldInstruction) and
+      instruction = getChi(oldInstruction) and
       result = getNewInstruction(oldInstruction)
     )
   }
 }
 
 private Instruction getNewInstruction(OldInstruction instr) { getOldInstruction(result) = instr }
+
+private OldInstruction getOldInstruction(Instruction instr) { instr = result }
+
+private ChiInstruction getChi(OldInstruction primaryInstr) { result = chiInstruction(primaryInstr) }
+
+private PhiInstruction getPhi(OldBlock defBlock, Alias::MemoryLocation defLocation) {
+  result = phiInstruction(defBlock.getFirstInstruction(), defLocation)
+}
 
 /**
  * Holds if instruction `def` needs to have a `Chi` instruction inserted after it, to account for a partial definition
@@ -527,7 +468,8 @@ private module PhiInsertion {
   predicate definitionLiveOnEntryToBlock(Alias::MemoryLocation defLocation, OldBlock block) {
     exists(int firstAccess |
       definitionHasUse(defLocation, block, firstAccess) and
-      firstAccess = min(int index |
+      firstAccess =
+        min(int index |
           definitionHasUse(defLocation, block, index)
           or
           definitionHasRedefinition(defLocation, block, index)
@@ -581,7 +523,7 @@ module DefUse {
     |
       // An odd offset corresponds to the `Chi` instruction.
       defOffset = oldOffset * 2 + 1 and
-      result = Chi(oldInstr) and
+      result = getChi(oldInstr) and
       (
         defLocation = Alias::getResultMemoryLocation(oldInstr) or
         defLocation = Alias::getResultMemoryLocation(oldInstr).getVirtualVariable()
@@ -600,7 +542,7 @@ module DefUse {
     or
     defOffset = -1 and
     hasDefinition(_, defLocation, defBlock, defOffset) and
-    result = Phi(defBlock, defLocation) and
+    result = getPhi(defBlock, defLocation) and
     actualDefLocation = defLocation
   }
 
@@ -653,17 +595,18 @@ module DefUse {
   private predicate definitionReachesRank(
     Alias::MemoryLocation useLocation, OldBlock block, int defRank, int reachesRank
   ) {
+    // The def always reaches the next use, even if there is also a def on the
+    // use instruction.
     hasDefinitionAtRank(useLocation, _, block, defRank, _) and
-    reachesRank <= exitRank(useLocation, block) and // Without this, the predicate would be infinite.
-    (
-      // The def always reaches the next use, even if there is also a def on the
-      // use instruction.
-      reachesRank = defRank + 1
-      or
-      // If the def reached the previous rank, it also reaches the current rank,
-      // unless there was another def at the previous rank.
-      definitionReachesRank(useLocation, block, defRank, reachesRank - 1) and
-      not hasDefinitionAtRank(useLocation, _, block, reachesRank - 1, _)
+    reachesRank = defRank + 1
+    or
+    // If the def reached the previous rank, it also reaches the current rank,
+    // unless there was another def at the previous rank.
+    exists(int prevRank |
+      reachesRank = prevRank + 1 and
+      definitionReachesRank(useLocation, block, defRank, prevRank) and
+      not prevRank = exitRank(useLocation, block) and
+      not hasDefinitionAtRank(useLocation, _, block, prevRank, _)
     )
   }
 
@@ -709,7 +652,8 @@ module DefUse {
     or
     exists(int firstAccess |
       hasUse(useLocation, block, firstAccess, _) and
-      firstAccess = min(int offset |
+      firstAccess =
+        min(int offset |
           hasUse(useLocation, block, offset, _)
           or
           hasNonPhiDefinition(useLocation, _, block, offset)
@@ -759,7 +703,21 @@ module DefUse {
       then defLocation = useLocation
       else (
         definitionHasPhiNode(defLocation, block) and
-        defLocation = useLocation.getVirtualVariable()
+        defLocation = useLocation.getVirtualVariable() and
+        // Handle the unusual case where a virtual variable does not overlap one of its member
+        // locations. For example, a definition of the virtual variable representing all aliased
+        // memory does not overlap a use of a string literal, because the contents of a string
+        // literal can never be redefined. The string literal's location could still be a member of
+        // the `AliasedVirtualVariable` due to something like:
+        // ```
+        // char s[10];
+        // strcpy(s, p);
+        // const char* p = b ? "SomeLiteral" : s;
+        // return p[3];
+        // ```
+        // In the above example, `p[3]` may access either the string literal or the local variable
+        // `s`, so both of those locations must be members of the `AliasedVirtualVariable`.
+        exists(Alias::getOverlap(defLocation, useLocation))
       )
     )
     or
@@ -817,7 +775,8 @@ module DefUse {
   private predicate defUseRank(
     Alias::MemoryLocation useLocation, OldBlock block, int rankIndex, int offset
   ) {
-    offset = rank[rankIndex](int j |
+    offset =
+      rank[rankIndex](int j |
         hasDefinition(useLocation, _, block, j) or hasUse(useLocation, block, j, _)
       )
   }
@@ -867,9 +826,9 @@ private module CachedForDebugging {
     )
     or
     exists(Alias::MemoryLocation location, OldBlock phiBlock, string specificity |
-      instr = Phi(phiBlock, location) and
-      result = "Phi Block(" + phiBlock.getUniqueId() + ")[" + specificity + "]: " +
-          location.getUniqueId() and
+      instr = getPhi(phiBlock, location) and
+      result =
+        "Phi Block(" + phiBlock.getUniqueId() + ")[" + specificity + "]: " + location.getUniqueId() and
       if location instanceof Alias::VirtualVariable
       then
         // Sort Phi nodes for virtual variables before Phi nodes for member locations.
@@ -877,7 +836,7 @@ private module CachedForDebugging {
       else specificity = "s"
     )
     or
-    instr = Unreached(_) and
+    instr = unreachedInstruction(_) and
     result = "Unreached"
   }
 
@@ -888,7 +847,10 @@ private module CachedForDebugging {
   }
 }
 
-module SSASanity {
+module SSAConsistency {
+  /**
+   * Holds if a `MemoryOperand` has more than one `MemoryLocation` assigned by alias analysis.
+   */
   query predicate multipleOperandMemoryLocations(
     OldIR::MemoryOperand operand, string message, OldIR::IRFunction func, string funcText
   ) {
@@ -901,6 +863,9 @@ module SSASanity {
     )
   }
 
+  /**
+   * Holds if a `MemoryLocation` does not have an associated `VirtualVariable`.
+   */
   query predicate missingVirtualVariableForMemoryLocation(
     Alias::MemoryLocation location, string message, OldIR::IRFunction func, string funcText
   ) {
@@ -909,4 +874,41 @@ module SSASanity {
     funcText = Language::getIdentityString(func.getFunction()) and
     message = "Memory location has no virtual variable in function '$@'."
   }
+
+  /**
+   * Holds if a `MemoryLocation` is a member of more than one `VirtualVariable`.
+   */
+  query predicate multipleVirtualVariablesForMemoryLocation(
+    Alias::MemoryLocation location, string message, OldIR::IRFunction func, string funcText
+  ) {
+    exists(int vvarCount |
+      vvarCount = strictcount(location.getVirtualVariable()) and
+      vvarCount > 1 and
+      func = location.getIRFunction() and
+      funcText = Language::getIdentityString(func.getFunction()) and
+      message =
+        "Memory location has " + vvarCount.toString() + " virtual variables in function '$@': (" +
+          concat(Alias::VirtualVariable vvar |
+            vvar = location.getVirtualVariable()
+          |
+            vvar.toString(), ", "
+          ) + ")."
+    )
+  }
+}
+
+/**
+ * Provides the portion of the parameterized IR interface that is used to construct the SSA stages
+ * of the IR. The raw stage of the IR does not expose these predicates.
+ * These predicates are all just aliases for predicates defined in the `Cached` module. This ensures
+ * that all of SSA construction will be evaluated in the same stage.
+ */
+module SSA {
+  class MemoryLocation = Alias::MemoryLocation;
+
+  predicate hasPhiInstruction = Cached::hasPhiInstructionCached/2;
+
+  predicate hasChiInstruction = Cached::hasChiInstructionCached/1;
+
+  predicate hasUnreachedInstruction = Cached::hasUnreachedInstructionCached/1;
 }

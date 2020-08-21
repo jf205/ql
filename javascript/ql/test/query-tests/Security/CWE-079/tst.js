@@ -11,17 +11,14 @@ function test() {
   // NOT OK
   $('<div style="width:' + target + 'px">');
 
-  // OK
-  $('<div style="width:' + +target + 'px">');
-  $('<div style="width:' + parseInt(target) + 'px">');
+  $('<div style="width:' + +target + 'px">'); // OK
+  $('<div style="width:' + parseInt(target) + 'px">'); // OK
 
-  // NOT OK
   let params = (new URL(document.location)).searchParams;
-  $('name').html(params.get('name'));
+  $('name').html(params.get('name'));  // NOT OK
 
-  // NOT OK
   var searchParams = new URLSearchParams(target.substring(1));
-  $('name').html(searchParams.get('name'));
+  $('name').html(searchParams.get('name')); // NOT OK
 }
 
 function foo(target) {
@@ -193,7 +190,7 @@ function references() {
 
     document.getElementsByClassName()[0].innerHTML = tainted; // NOT OK
     getElementsByClassName()[0].innerHTML = tainted; // NOT OK
-    getElementsByClassName().item().innerHTML = tainted; // NOT OK, but not supported
+    getElementsByClassName().item().innerHTML = tainted; // NOT OK
 }
 
 function react(){
@@ -317,4 +314,112 @@ function basicExceptions() {
 
 function handlebarsSafeString() {
 	return new Handlebars.SafeString(location); // NOT OK!	
+}
+
+function test2() {
+  var target = document.location.search
+
+  // OK
+  $('myId').html(target.length)
+}
+
+function getTaintedUrl() {
+  return new URL(document.location);
+}
+
+function URLPseudoProperties() {
+  let params = getTaintedUrl().searchParams;
+  $('name').html(params.get('name')); // NOT OK
+
+  let myUrl = getTaintedUrl();
+  $('name').html(myUrl.get('name')); // OK (.get is not defined on a URL)
+}
+
+
+function hash() {
+  function getUrl() {
+    return new URL(document.location);
+  }
+  $(getUrl().hash.substring(1)); // NOT OK
+
+}
+
+function growl() {
+  var target = document.location.search
+  $.jGrowl(target); // NOT OK
+}
+
+function thisNodes() {
+	var pluginName = "myFancyJQueryPlugin";
+	var myPlugin = function () {
+	    var target = document.location.search
+	    this.html(target); // NOT OK. (this is a jQuery object)
+		this.innerHTML = target // OK. (this is a jQuery object)
+	
+		this.each(function (i, e) {
+			this.innerHTML = target; // NOT OK. (this is a DOM-node);
+			this.html(target); // OK. (this is a DOM-node);
+			
+			e.innerHTML = target; // NOT OK.
+		});
+	}
+	$.fn[pluginName] = myPlugin; 
+
+}
+
+function test() {
+  var target = document.location.search
+
+  // NOT OK
+  $('myId').html(target)
+
+  // OK
+  $('myid').html(document.location.href.split("?")[0]);
+}
+
+function test() {
+  var target = document.location.search
+
+  
+  $('myId').html(target); // NOT OK
+
+  $('myId').html(target.taint); // NOT OK
+
+  target.taint2 = 2;
+  $('myId').html(target.taint2); // OK
+
+  target.taint3 = document.location.search;
+  $('myId').html(target.taint3); // NOT OK
+
+  target.sub.taint4 = 2
+  $('myId').html(target.sub.taint4); // OK
+
+  $('myId').html(target.taint5); // NOT OK
+  target.taint5 = "safe";
+
+  target.taint6 = 2;
+  if (random()) {return;}
+  $('myId').html(target.taint6); // OK
+
+  
+  if (random()) {target.taint7 = "safe";}
+  $('myId').html(target.taint7); // NOT OK
+
+  target.taint8 = target.taint8;
+  $('myId').html(target.taint8); // NOT OK
+
+  target.taint9 = (target.taint9 = "safe");
+  $('myId').html(target.taint9); // OK
+}
+
+function hash2() {
+  var payload = window.location.hash.substr(1);
+  document.write(payload); // NOT OK
+
+  let match = window.location.hash.match(/hello (\w+)/);
+  if (match) {
+    document.write(match[1]); // NOT OK
+  }
+
+  document.write(window.location.hash.split('#')[1]); // NOT OK
 }

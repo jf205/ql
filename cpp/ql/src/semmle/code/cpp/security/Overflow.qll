@@ -1,11 +1,14 @@
+/**
+ * Provides predicates for reasoning about when the value of an expression is
+ * guarded by an operation such as `<`, which confines its range.
+ */
+
 import cpp
 import semmle.code.cpp.controlflow.Dominance
 
-/*
- * Guarding
+/**
+ * Holds if the value of `use` is guarded using `abs`.
  */
-
-/** is the size of this use guarded using 'abs'? */
 predicate guardedAbs(Operation e, Expr use) {
   exists(FunctionCall fc | fc.getTarget().getName() = "abs" |
     fc.getArgument(0).getAChild*() = use and
@@ -13,19 +16,41 @@ predicate guardedAbs(Operation e, Expr use) {
   )
 }
 
-/** is the size of this use guarded to be less than something? */
+/**
+ * Gets the position of `stmt` in basic block `block` (this is a thin layer
+ * over `BasicBlock.getNode`, intended to improve performance).
+ */
+pragma[noinline]
+private int getStmtIndexInBlock(BasicBlock block, Stmt stmt) { block.getNode(result) = stmt }
+
+pragma[inline]
+private predicate stmtDominates(Stmt dominator, Stmt dominated) {
+  // In same block
+  exists(BasicBlock block, int dominatorIndex, int dominatedIndex |
+    dominatorIndex = getStmtIndexInBlock(block, dominator) and
+    dominatedIndex = getStmtIndexInBlock(block, dominated) and
+    dominatedIndex >= dominatorIndex
+  )
+  or
+  // In (possibly) different blocks
+  bbStrictlyDominates(dominator.getBasicBlock(), dominated.getBasicBlock())
+}
+
+/**
+ * Holds if the value of `use` is guarded to be less than something.
+ */
 pragma[nomagic]
 predicate guardedLesser(Operation e, Expr use) {
   exists(IfStmt c, RelationalOperation guard |
     use = guard.getLesserOperand().getAChild*() and
     guard = c.getControllingExpr().getAChild*() and
-    iDominates*(c.getThen(), e.getEnclosingStmt())
+    stmtDominates(c.getThen(), e.getEnclosingStmt())
   )
   or
   exists(Loop c, RelationalOperation guard |
     use = guard.getLesserOperand().getAChild*() and
     guard = c.getControllingExpr().getAChild*() and
-    iDominates*(c.getStmt(), e.getEnclosingStmt())
+    stmtDominates(c.getStmt(), e.getEnclosingStmt())
   )
   or
   exists(ConditionalExpr c, RelationalOperation guard |
@@ -37,19 +62,21 @@ predicate guardedLesser(Operation e, Expr use) {
   guardedAbs(e, use)
 }
 
-/** is the size of this use guarded to be greater than something? */
+/**
+ * Holds if the value of `use` is guarded to be greater than something.
+ */
 pragma[nomagic]
 predicate guardedGreater(Operation e, Expr use) {
   exists(IfStmt c, RelationalOperation guard |
     use = guard.getGreaterOperand().getAChild*() and
     guard = c.getControllingExpr().getAChild*() and
-    iDominates*(c.getThen(), e.getEnclosingStmt())
+    stmtDominates(c.getThen(), e.getEnclosingStmt())
   )
   or
   exists(Loop c, RelationalOperation guard |
     use = guard.getGreaterOperand().getAChild*() and
     guard = c.getControllingExpr().getAChild*() and
-    iDominates*(c.getStmt(), e.getEnclosingStmt())
+    stmtDominates(c.getStmt(), e.getEnclosingStmt())
   )
   or
   exists(ConditionalExpr c, RelationalOperation guard |
@@ -61,10 +88,14 @@ predicate guardedGreater(Operation e, Expr use) {
   guardedAbs(e, use)
 }
 
-/** a use of a given variable */
+/**
+ * Gets a use of a given variable `v`.
+ */
 VariableAccess varUse(LocalScopeVariable v) { result = v.getAnAccess() }
 
-/** is e not guarded against overflow by use? */
+/**
+ * Holds if `e` is not guarded against overflow by `use`.
+ */
 predicate missingGuardAgainstOverflow(Operation e, VariableAccess use) {
   use = e.getAnOperand() and
   exists(LocalScopeVariable v | use.getTarget() = v |
@@ -83,7 +114,9 @@ predicate missingGuardAgainstOverflow(Operation e, VariableAccess use) {
   )
 }
 
-/** is e not guarded against underflow by use? */
+/**
+ * Holds if `e` is not guarded against underflow by `use`.
+ */
 predicate missingGuardAgainstUnderflow(Operation e, VariableAccess use) {
   use = e.getAnOperand() and
   exists(LocalScopeVariable v | use.getTarget() = v |

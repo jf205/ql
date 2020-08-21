@@ -26,7 +26,7 @@
 	try {
 		unknown({ prop: foo });
 	} catch (e) {
-		$('myId').html(e); // NOT OK!
+		$('myId').html(e); // NOT OK! - but not detected due to not tainting object that have a tainted propety. [INCONSISTENCY]
 	}
 
 	try {
@@ -179,8 +179,38 @@ app.get('/user/:id', function (req, res) {
 app.get('/user/:id', function (req, res) {
 	unknown(req.params.id, (error, res) => {
 		if (error) {
-			$('myId').html(error); // OK (falls through to the next statement) 
+			$('myId').html(error); // NOT OK
 		}
-		$('myId').html(res); // NOT OK!
+		$('myId').html(res); // OK - does not contain an error, and `res` is otherwise unknown. 
 	});
 });
+
+app.get('/user/:id', function (req, res) {
+	try {
+		res.send(req.params.id);
+	} catch(err) {
+		res.send(err); // OK (the above `res.send()` is already reported by js/xss)
+	}
+});
+
+var fs = require("fs");
+
+(function () {
+	var foo = document.location.search;
+
+	try {
+		// A series of functions does not throw tainted exceptions.
+		Object.assign(foo, foo)
+		_.pick(foo, foo);
+		[foo, foo].join(join);
+		$.val(foo);
+		JSON.parse(foo); 
+		/bla/.test(foo);
+		console.log(foo);
+		log.info(foo);
+		localStorage.setItem(foo);
+	} catch (e) {
+		$('myId').html(e); // OK
+	}
+	
+})();

@@ -21,8 +21,7 @@ predicate squareMul(BinaryExpr e) {
 
 predicate squareRef(Name e) {
   e.isUse() and
-  exists(SsaVariable v, Expr s |
-    v.getVariable() = e.getVariable() |
+  exists(SsaVariable v, Expr s | v.getVariable() = e.getVariable() |
     s = v.getDefinition().getNode().getParentNode().(AssignStmt).getValue() and
     square(s)
   )
@@ -36,13 +35,11 @@ predicate square(Expr e) {
   squareRef(e)
 }
 
-from
-  Call c,
-  BinaryExpr s
+from Call c, BinaryExpr s
 where
   c.getFunc().toString() = "sqrt" and
   c.getArg(0) = s and
   s.getOp() instanceof Add and
-  square(s.getLeft()) and square(s.getRight())
-select
-  c, "Pythagorean calculation with sub-optimal numerics"
+  square(s.getLeft()) and
+  square(s.getRight())
+select c, "Pythagorean calculation with sub-optimal numerics"

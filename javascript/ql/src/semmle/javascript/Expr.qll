@@ -22,12 +22,6 @@ class ExprOrType extends @exprortype, Documentable {
   Function getEnclosingFunction() { result = getContainer() }
 
   /**
-   * Gets the statement container (function or toplevel) in which
-   * this expression or type appears.
-   */
-  StmtContainer getContainer() { exprContainers(this, result) }
-
-  /**
    * Gets the JSDoc comment associated with this expression or type or its parent statement, if any.
    */
   override JSDoc getDocumentation() {
@@ -107,12 +101,6 @@ class ExprOrType extends @exprortype, Documentable {
  * ```
  */
 class Expr extends @expr, ExprOrStmt, ExprOrType, AST::ValueNode {
-  /**
-   * Gets the statement container (function or toplevel) in which
-   * this expression appears.
-   */
-  override StmtContainer getContainer() { exprContainers(this, result) }
-
   /** Gets this expression, with any surrounding parentheses removed. */
   override Expr stripParens() { result = this }
 
@@ -120,7 +108,8 @@ class Expr extends @expr, ExprOrStmt, ExprOrType, AST::ValueNode {
   int getIntValue() { none() }
 
   /** Gets the constant string value this expression evaluates to, if any. */
-  string getStringValue() { none() }
+  cached
+  string getStringValue() { result = getStringValue(this) }
 
   /** Holds if this expression is impure, that is, its evaluation could have side effects. */
   predicate isImpure() { any() }
@@ -246,20 +235,30 @@ class Expr extends @expr, ExprOrStmt, ExprOrType, AST::ValueNode {
     )
   }
 
+  pragma[inline]
+  private Stmt getRawEnclosingStmt(Expr e) {
+    // For performance reasons, we need the enclosing statement without overrides
+    enclosingStmt(e, result)
+  }
+
   /**
    * Gets the data-flow node where exceptions thrown by this expression will
    * propagate if this expression causes an exception to be thrown.
    */
+  pragma[inline]
   DataFlow::Node getExceptionTarget() {
-    if exists(this.getEnclosingStmt().getEnclosingTryCatchStmt())
-    then
-      result = DataFlow::parameterNode(this
-              .getEnclosingStmt()
-              .getEnclosingTryCatchStmt()
-              .getACatchClause()
-              .getAParameter())
-    else result = any(DataFlow::FunctionNode f | f.getFunction() = this.getContainer()).getExceptionalReturn()
+    result = getCatchParameterFromStmt(getRawEnclosingStmt(this))
+    or
+    not exists(getCatchParameterFromStmt(getRawEnclosingStmt(this))) and
+    result =
+      any(DataFlow::FunctionNode f | f.getFunction() = this.getContainer()).getExceptionalReturn()
   }
+}
+
+cached
+private DataFlow::Node getCatchParameterFromStmt(Stmt stmt) {
+  result =
+    DataFlow::parameterNode(stmt.getEnclosingTryCatchStmt().getACatchClause().getAParameter())
 }
 
 /**
@@ -305,6 +304,7 @@ class Label extends @label, Identifier, Expr {
  * 3n        // BigInt literal
  * "hello"   // string literal
  * /jsx?/    // regular-expression literal
+ * ```
  */
 class Literal extends @literal, Expr {
   /** Gets the value of this literal, as a string. */
@@ -423,8 +423,6 @@ class BigIntLiteral extends @bigintliteral, Literal {
  * ```
  */
 class StringLiteral extends @stringliteral, Literal {
-  override string getStringValue() { result = getValue() }
-
   /**
    * Gets the value of this string literal parsed as a regular expression, if possible.
    *
@@ -629,9 +627,6 @@ class Property extends @property, Documentable {
 
   /** Gets the (0-based) index at which this property appears in its enclosing literal. */
   int getIndex() { this = getObjectExpr().getProperty(result) }
-
-  /** Gets the function or toplevel in which this property occurs. */
-  StmtContainer getContainer() { result = getObjectExpr().getContainer() }
 
   /**
    * Holds if this property is impure, that is, the evaluation of its name or
@@ -841,8 +836,6 @@ class SeqExpr extends @seqexpr, Expr {
   Expr getLastOperand() { result = getOperand(getNumOperands() - 1) }
 
   override predicate isImpure() { getAnOperand().isImpure() }
-
-  override string getStringValue() { result = getLastOperand().getStringValue() }
 
   override Expr getUnderlyingValue() { result = getLastOperand().getUnderlyingValue() }
 }
@@ -1358,6 +1351,11 @@ class EqualityTest extends @equalitytest, Comparison {
     (this instanceof NEqExpr or this instanceof StrictNEqExpr) and
     result = false
   }
+
+  /**
+   * Holds if the equality operator is strict (`===` or `!==`).
+   */
+  predicate isStrict() { this instanceof StrictEqExpr or this instanceof StrictNEqExpr }
 }
 
 /**
@@ -1515,11 +1513,70 @@ class URShiftExpr extends @urshiftexpr, BinaryExpr {
  */
 class AddExpr extends @addexpr, BinaryExpr {
   override string getOperator() { result = "+" }
-
-  override string getStringValue() {
-    result = getLeftOperand().getStringValue() + getRightOperand().getStringValue()
-  }
 }
+
+/**
+ * Gets the string value for the expression `e`.
+ * This string-value is either a constant-string, or the result from a simple string-concatenation.
+ */
+private string getStringValue(Expr e) {
+  result = getConstantString(e)
+  or
+  result = getConcatenatedString(e)
+}
+
+/**
+ * Gets the constant string value for the expression `e`.
+ */
+private string getConstantString(Expr e) {
+  result = getConstantString(e.getUnderlyingValue())
+  or
+  result = e.(StringLiteral).getValue()
+  or
+  exists(TemplateLiteral lit | lit = e |
+    // fold singletons
+    lit.getNumChildExpr() = 0 and
+    result = ""
+    or
+    e.getNumChildExpr() = 1 and
+    result = getConstantString(lit.getElement(0))
+  )
+  or
+  result = e.(TemplateElement).getValue()
+}
+
+/**
+ * Holds if `add` is a string-concatenation where all the transitive leafs have a constant string value.
+ */
+private predicate hasAllConstantLeafs(AddExpr add) {
+  forex(Expr leaf | leaf = getAnAddOperand*(add) and not exists(getAnAddOperand(leaf)) |
+    exists(getConstantString(leaf))
+  )
+}
+
+/**
+ * Gets the concatenated string for a string-concatenation `add`.
+ * Only has a result if `add` is not itself an operand in another string-concatenation with all constant leafs.
+ */
+private string getConcatenatedString(Expr add) {
+  result = getConcatenatedString(add.getUnderlyingValue())
+  or
+  not add = getAnAddOperand(any(AddExpr parent | hasAllConstantLeafs(parent))) and
+  hasAllConstantLeafs(add) and
+  result =
+    strictconcat(Expr leaf |
+      leaf = getAnAddOperand*(add)
+    |
+      getConstantString(leaf) order by leaf.getFirstToken().getIndex()
+    ) and
+  result.length() < 1000 * 1000
+}
+
+/**
+ * Gets an operand from `add`.
+ * Is specialized to `AddExpr` such that `getAnAddOperand*(add)` can be used to get a leaf from a string-concatenation transitively.
+ */
+private Expr getAnAddOperand(AddExpr add) { result = add.getAnOperand().getUnderlyingValue() }
 
 /**
  * A subtraction expression.
@@ -1791,6 +1848,11 @@ class AssignExpr extends @assignexpr, Assignment {
   override Expr getUnderlyingValue() { result = getRhs().getUnderlyingValue() }
 }
 
+private class TCompoundAssignExpr =
+  @assignaddexpr or @assignsubexpr or @assignmulexpr or @assigndivexpr or @assignmodexpr or
+      @assignexpexpr or @assignlshiftexpr or @assignrshiftexpr or @assignurshiftexpr or
+      @assignorexpr or @assignxorexpr or @assignandexpr;
+
 /**
  * A compound assign expression.
  *
@@ -1801,7 +1863,7 @@ class AssignExpr extends @assignexpr, Assignment {
  * x /= 2
  * ```
  */
-abstract class CompoundAssignExpr extends Assignment { }
+class CompoundAssignExpr extends TCompoundAssignExpr, Assignment { }
 
 /**
  * A compound add-assign expression.
@@ -2618,7 +2680,7 @@ class DynamicImportExpr extends @dynamicimport, Expr, Import {
 }
 
 /** A literal path expression appearing in a dynamic import. */
-private class LiteralDynamicImportPath extends PathExprInModule, ConstantString {
+private class LiteralDynamicImportPath extends PathExpr, ConstantString {
   LiteralDynamicImportPath() {
     exists(DynamicImportExpr di | this.getParentExpr*() = di.getSource())
   }

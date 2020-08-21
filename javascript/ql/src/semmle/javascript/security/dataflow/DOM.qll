@@ -85,8 +85,14 @@ class DomMethodCallExpr extends MethodCallExpr {
         name = "setAttributeNS" and argPos = 2
       ) and
       // restrict to potentially dangerous attributes
-      exists(string attr | 
-        attr = "action" or attr = "formaction" or attr = "href" or attr = "src" or attr = "xlink:href" |
+      exists(string attr |
+        attr = "action" or
+        attr = "formaction" or
+        attr = "href" or
+        attr = "src" or
+        attr = "xlink:href" or
+        attr = "data"
+      |
         getArgument(argPos - 1).getStringValue().toLowerCase() = attr
       )
     )
@@ -110,6 +116,17 @@ class DomPropWriteNode extends Assignment {
   predicate interpretsValueAsHTML() {
     lhs.getPropertyName() = "innerHTML" or
     lhs.getPropertyName() = "outerHTML"
+  }
+
+  /**
+   * Holds if the assigned value is interpreted as JavaScript via javascript: protocol.
+   */
+  predicate interpretsValueAsJavaScriptUrl() {
+    lhs.getPropertyName() = "action" or
+    lhs.getPropertyName() = "formaction" or
+    lhs.getPropertyName() = "href" or
+    lhs.getPropertyName() = "src" or
+    lhs.getPropertyName() = "data"
   }
 }
 

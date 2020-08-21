@@ -5,11 +5,11 @@
  * @tags method
  *       override
  */
- 
+
 import python
 
 from FunctionObject override, FunctionObject base
 where
-    base.getQualifiedName() = "MyClass.methodName" and
-    override.overrides(base)
+  base.getQualifiedName() = "MyClass.methodName" and
+  override.overrides(base)
 select override

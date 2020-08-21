@@ -11,7 +11,10 @@ import semmle.code.java.dataflow.InstanceAccess
 
 cached
 private newtype TNode =
-  TExprNode(Expr e) or
+  TExprNode(Expr e) {
+    not e.getType() instanceof VoidType and
+    not e.getParent*() instanceof Annotation
+  } or
   TExplicitParameterNode(Parameter p) { exists(p.getCallable().getBody()) } or
   TImplicitVarargsArray(Call c) {
     c.getCallee().isVarargs() and
@@ -26,6 +29,8 @@ private newtype TNode =
     e instanceof Argument and not e.getType() instanceof ImmutableType
     or
     exists(FieldAccess fa | fa.getField() instanceof InstanceField and e = fa.getQualifier())
+    or
+    exists(ArrayAccess aa | e = aa.getArray())
   } or
   TImplicitExprPostUpdate(InstanceAccessExt ia) {
     implicitInstanceArgument(_, ia)
@@ -73,15 +78,19 @@ class Node extends TNode {
     result = this.(ImplicitPostUpdateNode).getPreUpdateNode().getType()
   }
 
-  /** Gets the callable in which this node occurs. */
-  Callable getEnclosingCallable() {
+  private Callable getEnclosingCallableImpl() {
     result = this.asExpr().getEnclosingCallable() or
     result = this.asParameter().getCallable() or
     result = this.(ImplicitVarargsArray).getCall().getEnclosingCallable() or
     result = this.(InstanceParameterNode).getCallable() or
     result = this.(ImplicitInstanceAccess).getInstanceAccess().getEnclosingCallable() or
     result = this.(MallocNode).getClassInstanceExpr().getEnclosingCallable() or
-    result = this.(ImplicitPostUpdateNode).getPreUpdateNode().getEnclosingCallable()
+    result = this.(ImplicitPostUpdateNode).getPreUpdateNode().getEnclosingCallableImpl()
+  }
+
+  /** Gets the callable in which this node occurs. */
+  Callable getEnclosingCallable() {
+    result = unique(DataFlowCallable c | c = this.getEnclosingCallableImpl() | c)
   }
 
   private Type getImprovedTypeBound() {
@@ -390,15 +399,36 @@ predicate simpleLocalFlowStep(Node node1, Node node2) {
   or
   ThisFlow::adjacentThisRefs(node1.(PostUpdateNode).getPreUpdateNode(), node2)
   or
-  node2.asExpr().(ParExpr).getExpr() = node1.asExpr()
-  or
   node2.asExpr().(CastExpr).getExpr() = node1.asExpr()
   or
-  node2.asExpr().(ConditionalExpr).getTrueExpr() = node1.asExpr()
-  or
-  node2.asExpr().(ConditionalExpr).getFalseExpr() = node1.asExpr()
+  node2.asExpr().(ChooseExpr).getAResultExpr() = node1.asExpr()
   or
   node2.asExpr().(AssignExpr).getSource() = node1.asExpr()
+  or
+  exists(MethodAccess ma, Method m |
+    ma = node2.asExpr() and
+    m = ma.getMethod() and
+    m.getDeclaringType().hasQualifiedName("java.util", "Objects") and
+    (
+      m.hasName(["requireNonNull", "requireNonNullElseGet"]) and node1.asExpr() = ma.getArgument(0)
+      or
+      m.hasName("requireNonNullElse") and node1.asExpr() = ma.getAnArgument()
+      or
+      m.hasName("toString") and node1.asExpr() = ma.getArgument(1)
+    )
+  )
+  or
+  exists(MethodAccess ma, Method m |
+    ma = node2.asExpr() and
+    m = ma.getMethod() and
+    m
+        .getDeclaringType()
+        .getSourceDeclaration()
+        .getASourceSupertype*()
+        .hasQualifiedName("java.util", "Stack") and
+    m.hasName("push") and
+    node1.asExpr() = ma.getArgument(0)
+  )
 }
 
 /**

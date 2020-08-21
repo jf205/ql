@@ -17,7 +17,7 @@ namespace Semmle.Extraction.CSharp.Entities.Expressions
 
         protected abstract ArrayTypeSyntax TypeSyntax { get; }
 
-        public abstract InitializerExpressionSyntax  Initializer { get;  }
+        public abstract InitializerExpressionSyntax Initializer { get; }
 
         protected override void PopulateExpression(TextWriter trapFile)
         {
@@ -48,7 +48,7 @@ namespace Semmle.Extraction.CSharp.Entities.Expressions
                             ExprKind.INT_LITERAL,
                             this,
                             child,
-                            false,
+                            true,
                             size.ToString());
 
                         new Expression(info);
@@ -90,7 +90,27 @@ namespace Semmle.Extraction.CSharp.Entities.Expressions
 
         public override InitializerExpressionSyntax Initializer => Syntax.Initializer;
 
+        protected override void PopulateExpression(TextWriter trapFile)
+        {
+            base.PopulateExpression(trapFile);
+            trapFile.stackalloc_array_creation(this);
+        }
+
         public static Expression Create(ExpressionNodeInfo info) => new StackAllocArrayCreation(info).TryPopulate();
+    }
+
+    class ImplicitStackAllocArrayCreation : ArrayCreation<ImplicitStackAllocArrayCreationExpressionSyntax>
+    {
+        ImplicitStackAllocArrayCreation(ExpressionNodeInfo info) : base(info.SetKind(ExprKind.ARRAY_CREATION)) { }
+
+        public static Expression Create(ExpressionNodeInfo info) => new ImplicitStackAllocArrayCreation(info).TryPopulate();
+
+        protected override void PopulateExpression(TextWriter trapFile)
+        {
+            ArrayInitializer.Create(new ExpressionNodeInfo(cx, Syntax.Initializer, this, -1));
+            trapFile.implicitly_typed_array_creation(this);
+            trapFile.stackalloc_array_creation(this);
+        }
     }
 
     class ImplicitArrayCreation : ArrayCreation<ImplicitArrayCreationExpressionSyntax>
