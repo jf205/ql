@@ -5,7 +5,6 @@ using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.Linq;
 using System.Runtime.Serialization;
-using System.Threading.Tasks;
 using System.Web;
 using System.Web.UI.WebControls;
 
@@ -46,7 +45,7 @@ namespace System.Runtime.Serialization
 /// </summary>
 public class LocalDataFlow
 {
-    public async void M(bool b)
+    public void M(bool b)
     {
         // Assignment, tainted
         var sink0 = "taint source";
@@ -64,17 +63,6 @@ public class LocalDataFlow
         // Assignment (concatenation), not tainted
         nonSink0 += "abc";
         Check(nonSink0);
-
-        // Assignment (indexer), tainted
-        var sink2 = new Dictionary<int, string[]>();
-        sink2[0][1] = sink1;
-        Check(sink2);
-
-        // Assignment (indexer), not tainted
-        var nonSink1 = new Dictionary<string, string>();
-        nonSink1[""] = nonSink0;
-        nonSink1[sink1] = ""; // do not track tainted keys
-        Check(nonSink1);
 
         // Concatenation, tainted
         var sink5 = sink1 + "ok";
@@ -116,30 +104,6 @@ public class LocalDataFlow
         nonSink3 = nonSink0 as object;
         Check(nonSink3);
 
-        // Array creation (initializer), tainted
-        var sink10 = new object[] { sink9 };
-        Check(sink10);
-
-        // Array creation (initializer), not tainted
-        var nonSink4 = new object[] { 42 };
-        Check(nonSink4);
-
-        // Object creation (collection initializer), tainted
-        var sink11 = new Dictionary<string, string> { { "", sink9 } };
-        Check(sink11);
-
-        // Object creation (collection initializer), not tainted
-        nonSink1 = new Dictionary<string, string> { { sink9, "" } };
-        Check(nonSink1);
-
-        // Data-preserving LINQ, tainted
-        var sink14 = sink11.First(x => x.Value != null);
-        Check(sink14);
-
-        // Data-preserving LINQ, not tainted
-        nonSink3 = nonSink1.First(x => x.Value != null);
-        Check(nonSink1);
-
         // Standard method with a tainted argument, tainted
         var sink15 = Int32.Parse(sink9);
         Check(sink15);
@@ -163,7 +127,7 @@ public class LocalDataFlow
         Check(sink49);
         var sink50 = String.Copy(sink49);
         Check(sink50);
-        var sink51 = String.Join(", ", "", sink50, "");
+        var sink51 = String.Join(", ", new string[] { "", sink50, "" });
         Check(sink51);
         var sink52 = "".Insert(0, sink51);
         Check(sink52);
@@ -187,7 +151,7 @@ public class LocalDataFlow
         Check(nonSink0);
         nonSink0 = String.Copy(nonSink0);
         Check(nonSink0);
-        nonSink0 = String.Join(", ", "", nonSink0, "");
+        nonSink0 = String.Join(", ", new string[] { "", nonSink0, "" });
         Check(nonSink0);
         nonSink0 = "".Insert(0, nonSink0);
         Check(nonSink0);
@@ -206,22 +170,6 @@ public class LocalDataFlow
         nonSink7 = sink8.Equals(nonSink3);
         Check(nonSink7);
 
-        // Indexer access, tainted
-        var sink23 = sink11[""];
-        Check(sink23);
-
-        // Indexer access, not tainted
-        nonSink0 = nonSink1[""];
-        Check(nonSink0);
-
-        // Array access, tainted
-        var sink24 = sink10[0];
-        Check(sink24);
-
-        // Array access, not tainted
-        nonSink3 = nonSink4[0];
-        Check(nonSink3);
-
         // Logical operation using tainted operand, tainted
         var sink25 = sink20 || false;
         Check(sink25);
@@ -231,7 +179,7 @@ public class LocalDataFlow
         Check(nonSink7);
 
         // Ad hoc tracking (System.Uri), tainted
-        var sink26 = new System.Uri(sink23);
+        var sink26 = new System.Uri(sink9);
         Check(sink26);
         var sink27 = sink26.ToString();
         Check(sink27);
@@ -269,13 +217,13 @@ public class LocalDataFlow
         // Ad hoc tracking (System.String), tainted
         var sink33 = (string)sink32.Substring(0).ToLowerInvariant().ToUpper().Trim(' ').Replace("a", "b").Insert(0, "").Clone();
         Check(sink33);
-        var sink48 = sink33.Normalize().Remove(4, 5).Split(' ');
+        var sink48 = sink33.Normalize().Remove(4, 5);
         Check(sink48);
 
         // Ad hoc tracking (System.String), not tainted
         nonSink0 = (string)nonSink0.Substring(0).ToLowerInvariant().ToUpper().Trim(' ').Replace("a", "b").Insert(0, "").Clone();
         Check(nonSink0);
-        var nonSink15 = nonSink0.Normalize().Remove(4, 5).Split(' ');
+        var nonSink15 = nonSink0.Normalize().Remove(4, 5);
         Check(nonSink15);
 
         // Ad hoc tracking (System.Text.StringBuilder), tainted
@@ -294,44 +242,6 @@ public class LocalDataFlow
         Check(nonSink0);
         nonSink10.AppendLine(nonSink0);
         Check(nonSink10);
-
-        // Ad hoc tracking (System.Lazy), tainted
-        var sink40 = new Lazy<string>(TaintedMethod);
-        Check(sink40);
-        var sink41 = sink40.Value;
-        Check(sink41);
-        var sink42 = new Lazy<string>(() => "taint source");
-        Check(sink42);
-        var sink43 = sink42.Value;
-        Check(sink43);
-
-        // Ad hoc tracking (System.Lazy), not tainted
-        var nonSink12 = new Lazy<string>(NonTaintedMethod);
-        Check(nonSink12);
-        nonSink0 = nonSink12.Value;
-        Check(nonSink0);
-        nonSink12 = new Lazy<string>(() => "");
-        Check(nonSink12);
-        nonSink0 = nonSink12.Value;
-        Check(nonSink0);
-
-        // Ad hoc tracking (collections), tainted
-        var sink3 = new Dictionary<int, string>();
-        sink3.Add(0, sink1);
-        Check(sink3);
-        var sink12 = sink3.Values;
-        Check(sink12);
-        var sink13 = sink12.Reverse();
-        Check(sink13);
-
-        // Ad hoc tracking (collections), not tainted
-        nonSink1.Add("", nonSink0);
-        nonSink1.Add(sink1, ""); // do not track tainted keys
-        Check(nonSink1);
-        var nonSink5 = nonSink1.Values;
-        Check(nonSink5);
-        var nonSink6 = nonSink5.Reverse();
-        Check(nonSink6);
 
         // Ad hoc tracking (data contracts), tainted
         var taintedDataContract = new DataContract();
@@ -357,46 +267,6 @@ public class LocalDataFlow
         // Ad hoc tracking (HttpRequest), not tainted
         TextBox nonTaintedTextBox = null;
         nonSink0 = nonTaintedTextBox.Text;
-        Check(nonSink0);
-
-        // Iteration over a tracked expression, tainted
-        foreach (var sink61 in sink10)
-            Check(sink61);
-        IEnumerator sink62 = sink10.GetEnumerator();
-        Check(sink62);
-        var sink63 = sink62.Current;
-        Check(sink63);
-        IEnumerator<KeyValuePair<int, string>> sink64 = sink3.GetEnumerator();
-        Check(sink64);
-        var sink65 = sink64.Current;
-        Check(sink65);
-        var sink66 = sink65.Value;
-        Check(sink66);
-
-        // Iteration over a tracked expression, not tainted
-        foreach (var nonSink17 in nonSink4)
-            Check(nonSink17);
-        IEnumerator nonSink18 = nonSink4.GetEnumerator();
-        Check(nonSink18);
-        nonSink3 = nonSink18.Current;
-        Check(nonSink3);
-        IEnumerator<KeyValuePair<string, string>> nonSink19 = nonSink1.GetEnumerator();
-        Check(nonSink19);
-        var nonSink20 = nonSink19.Current;
-        Check(nonSink20);
-        nonSink0 = nonSink20.Value;
-        Check(nonSink0);
-
-        // async await, tainted
-        var sink67 = Task.Run(() => "taint source");
-        Check(sink67);
-        var sink68 = await sink67;
-        Check(sink68);
-
-        // async await, not tainted
-        var nonSink21 = Task.Run(() => "");
-        Check(nonSink21);
-        nonSink0 = await nonSink21;
         Check(nonSink0);
 
         // Interpolated string, tainted
@@ -483,7 +353,7 @@ public class LocalDataFlow
         using (x1 = x) { }
 
         IEnumerable<object> os2;
-        foreach(var o in os2 = os) { }
+        foreach (var o in os2 = os) { }
     }
 
     public static implicit operator LocalDataFlow(string[] args) => null;

@@ -4,6 +4,7 @@
 
 import javascript
 import semmle.javascript.frameworks.Templating
+private import semmle.javascript.dataflow.InferredTypes
 
 module DOM {
   /**
@@ -290,12 +291,43 @@ module DOM {
      */
     abstract class Range extends DataFlow::Node { }
 
+    private string getADomPropertyName() {
+      exists(ExternalInstanceMemberDecl decl |
+        result = decl.getName() and
+        isDomRootType(decl.getDeclaringType().getASupertype*())
+      )
+    }
+
     private class DefaultRange extends Range {
       DefaultRange() {
-        this.asExpr().(VarAccess).getVariable() instanceof DOMGlobalVariable or
-        this = domValueRef().getAPropertyRead() or
-        this = domElementCreationOrQuery() or
+        this.asExpr().(VarAccess).getVariable() instanceof DOMGlobalVariable
+        or
+        exists(DataFlow::PropRead read |
+          this = read and
+          read = domValueRef().getAPropertyRead()
+        |
+          not read.mayHavePropertyName(_)
+          or
+          read.mayHavePropertyName(getADomPropertyName())
+          or
+          read.mayHavePropertyName(any(string s | exists(s.toInt())))
+        )
+        or
+        this = domElementCreationOrQuery()
+        or
         this = domElementCollection()
+        or
+        exists(JQuery::MethodCall call | this = call and call.getMethodName() = "get" |
+          call.getNumArgument() = 1 and
+          forex(InferredType t | t = call.getArgument(0).analyze().getAType() | t = TTNumber())
+        )
+        or
+        // A `this` node from a callback given to a `$().each(callback)` call.
+        // purposely not using JQuery::MethodCall to avoid `jquery.each()`.
+        exists(DataFlow::CallNode eachCall | eachCall = JQuery::objectRef().getAMethodCall("each") |
+          this = DataFlow::thisNode(eachCall.getCallback(0).getFunction()) or
+          this = eachCall.getABoundCallbackParameter(0, 1)
+        )
       }
     }
   }
@@ -307,6 +339,9 @@ module DOM {
   private DataFlow::SourceNode domValueRef(DataFlow::TypeTracker t) {
     t.start() and
     result = domValueSource()
+    or
+    t.start() and
+    result = domValueRef().getAMethodCall(["item", "namedItem"])
     or
     exists(DataFlow::TypeTracker t2 | result = domValueRef(t2).track(t2, t))
   }

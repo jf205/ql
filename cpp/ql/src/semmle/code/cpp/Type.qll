@@ -1,5 +1,8 @@
+/**
+ * Provides a hierarchy of classes for modeling C/C++ types.
+ */
+
 import semmle.code.cpp.Element
-import semmle.code.cpp.Member
 import semmle.code.cpp.Function
 private import semmle.code.cpp.internal.ResolveClass
 
@@ -322,7 +325,7 @@ class BuiltInType extends Type, @builtintype {
 class ErroneousType extends BuiltInType {
   ErroneousType() { builtintypes(underlyingElement(this), _, 1, _, _, _) }
 
-  override string getCanonicalQLClass() { result = "ErroneousType" }
+  override string getAPrimaryQlClass() { result = "ErroneousType" }
 }
 
 /**
@@ -342,7 +345,7 @@ class ErroneousType extends BuiltInType {
 class UnknownType extends BuiltInType {
   UnknownType() { builtintypes(underlyingElement(this), _, 2, _, _, _) }
 
-  override string getCanonicalQLClass() { result = "UnknownType" }
+  override string getAPrimaryQlClass() { result = "UnknownType" }
 }
 
 private predicate isArithmeticType(@builtintype type, int kind) {
@@ -361,7 +364,7 @@ private predicate isArithmeticType(@builtintype type, int kind) {
 class ArithmeticType extends BuiltInType {
   ArithmeticType() { isArithmeticType(underlyingElement(this), _) }
 
-  override string getCanonicalQLClass() { result = "ArithmeticType" }
+  override string getAPrimaryQlClass() { result = "ArithmeticType" }
 }
 
 private predicate isIntegralType(@builtintype type, int kind) {
@@ -376,6 +379,8 @@ private predicate isIntegralType(@builtintype type, int kind) {
     kind = 43
     or
     kind = 44
+    or
+    kind = 51
   )
 }
 
@@ -463,6 +468,8 @@ private predicate integralTypeMapping(int original, int canonical, int unsigned,
   original = 43 and canonical = 43 and unsigned = -1 and signed = -1 // char16_t
   or
   original = 44 and canonical = 44 and unsigned = -1 and signed = -1 // char32_t
+  or
+  original = 51 and canonical = 51 and unsigned = -1 and signed = -1 // char8_t
 }
 
 /**
@@ -557,7 +564,7 @@ class IntegralType extends ArithmeticType, IntegralOrEnumType {
 class BoolType extends IntegralType {
   BoolType() { builtintypes(underlyingElement(this), _, 4, _, _, _) }
 
-  override string getCanonicalQLClass() { result = "BoolType" }
+  override string getAPrimaryQlClass() { result = "BoolType" }
 }
 
 /**
@@ -582,7 +589,7 @@ abstract class CharType extends IntegralType { }
 class PlainCharType extends CharType {
   PlainCharType() { builtintypes(underlyingElement(this), _, 5, _, _, _) }
 
-  override string getCanonicalQLClass() { result = "PlainCharType" }
+  override string getAPrimaryQlClass() { result = "PlainCharType" }
 }
 
 /**
@@ -595,7 +602,7 @@ class PlainCharType extends CharType {
 class UnsignedCharType extends CharType {
   UnsignedCharType() { builtintypes(underlyingElement(this), _, 6, _, _, _) }
 
-  override string getCanonicalQLClass() { result = "UnsignedCharType" }
+  override string getAPrimaryQlClass() { result = "UnsignedCharType" }
 }
 
 /**
@@ -608,7 +615,7 @@ class UnsignedCharType extends CharType {
 class SignedCharType extends CharType {
   SignedCharType() { builtintypes(underlyingElement(this), _, 7, _, _, _) }
 
-  override string getCanonicalQLClass() { result = "SignedCharType" }
+  override string getAPrimaryQlClass() { result = "SignedCharType" }
 }
 
 /**
@@ -625,7 +632,7 @@ class ShortType extends IntegralType {
     builtintypes(underlyingElement(this), _, 10, _, _, _)
   }
 
-  override string getCanonicalQLClass() { result = "ShortType" }
+  override string getAPrimaryQlClass() { result = "ShortType" }
 }
 
 /**
@@ -642,7 +649,7 @@ class IntType extends IntegralType {
     builtintypes(underlyingElement(this), _, 13, _, _, _)
   }
 
-  override string getCanonicalQLClass() { result = "IntType" }
+  override string getAPrimaryQlClass() { result = "IntType" }
 }
 
 /**
@@ -659,7 +666,7 @@ class LongType extends IntegralType {
     builtintypes(underlyingElement(this), _, 16, _, _, _)
   }
 
-  override string getCanonicalQLClass() { result = "LongType" }
+  override string getAPrimaryQlClass() { result = "LongType" }
 }
 
 /**
@@ -676,7 +683,7 @@ class LongLongType extends IntegralType {
     builtintypes(underlyingElement(this), _, 19, _, _, _)
   }
 
-  override string getCanonicalQLClass() { result = "LongLongType" }
+  override string getAPrimaryQlClass() { result = "LongLongType" }
 }
 
 /**
@@ -694,31 +701,191 @@ class Int128Type extends IntegralType {
     builtintypes(underlyingElement(this), _, 37, _, _, _)
   }
 
-  override string getCanonicalQLClass() { result = "Int128Type" }
+  override string getAPrimaryQlClass() { result = "Int128Type" }
+}
+
+private newtype TTypeDomain =
+  TRealDomain() or
+  TComplexDomain() or
+  TImaginaryDomain()
+
+/**
+ * The type domain of a floating-point type. One of `RealDomain`, `ComplexDomain`, or
+ * `ImaginaryDomain`.
+ */
+class TypeDomain extends TTypeDomain {
+  /** Gets a textual representation of this type domain. */
+  string toString() { none() }
 }
 
 /**
- * The C/C++ floating point types. See 4.5.  This includes `float`,
- * `double` and `long double` types.
- * ```
- * float f;
- * double d;
- * long double ld;
- * ```
+ * The type domain of a floating-point type that represents a real number.
+ */
+class RealDomain extends TypeDomain, TRealDomain {
+  final override string toString() { result = "real" }
+}
+
+/**
+ * The type domain of a floating-point type that represents a complex number.
+ */
+class ComplexDomain extends TypeDomain, TComplexDomain {
+  final override string toString() { result = "complex" }
+}
+
+/**
+ * The type domain of a floating-point type that represents an imaginary number.
+ */
+class ImaginaryDomain extends TypeDomain, TImaginaryDomain {
+  final override string toString() { result = "imaginary" }
+}
+
+/**
+ * Data for floating-point types.
+ *
+ * kind: The original type kind. Can be any floating-point type kind.
+ * base: The numeric base of the number's representation. Can be 2 (binary) or 10 (decimal).
+ * domain: The type domain of the type. Can be `RealDomain`, `ComplexDomain`, or `ImaginaryDomain`.
+ * realKind: The type kind of the corresponding real type. For example, the corresponding real type
+ *   of `_Complex double` is `double`.
+ * extended: `true` if the number is an extended-precision floating-point number, such as
+ *   `_Float32x`.
+ */
+private predicate floatingPointTypeMapping(
+  int kind, int base, TTypeDomain domain, int realKind, boolean extended
+) {
+  // float
+  kind = 24 and base = 2 and domain = TRealDomain() and realKind = 24 and extended = false
+  or
+  // double
+  kind = 25 and base = 2 and domain = TRealDomain() and realKind = 25 and extended = false
+  or
+  // long double
+  kind = 26 and base = 2 and domain = TRealDomain() and realKind = 26 and extended = false
+  or
+  // _Complex float
+  kind = 27 and base = 2 and domain = TComplexDomain() and realKind = 24 and extended = false
+  or
+  // _Complex double
+  kind = 28 and base = 2 and domain = TComplexDomain() and realKind = 25 and extended = false
+  or
+  // _Complex long double
+  kind = 29 and base = 2 and domain = TComplexDomain() and realKind = 26 and extended = false
+  or
+  // _Imaginary float
+  kind = 30 and base = 2 and domain = TImaginaryDomain() and realKind = 24 and extended = false
+  or
+  // _Imaginary double
+  kind = 31 and base = 2 and domain = TImaginaryDomain() and realKind = 25 and extended = false
+  or
+  // _Imaginary long double
+  kind = 32 and base = 2 and domain = TImaginaryDomain() and realKind = 26 and extended = false
+  or
+  // __float128
+  kind = 38 and base = 2 and domain = TRealDomain() and realKind = 38 and extended = false
+  or
+  // _Complex __float128
+  kind = 39 and base = 2 and domain = TComplexDomain() and realKind = 38 and extended = false
+  or
+  // _Decimal32
+  kind = 40 and base = 10 and domain = TRealDomain() and realKind = 40 and extended = false
+  or
+  // _Decimal64
+  kind = 41 and base = 10 and domain = TRealDomain() and realKind = 41 and extended = false
+  or
+  // _Decimal128
+  kind = 42 and base = 10 and domain = TRealDomain() and realKind = 42 and extended = false
+  or
+  // _Float32
+  kind = 45 and base = 2 and domain = TRealDomain() and realKind = 45 and extended = false
+  or
+  // _Float32x
+  kind = 46 and base = 2 and domain = TRealDomain() and realKind = 46 and extended = true
+  or
+  // _Float64
+  kind = 47 and base = 2 and domain = TRealDomain() and realKind = 47 and extended = false
+  or
+  // _Float64x
+  kind = 48 and base = 2 and domain = TRealDomain() and realKind = 48 and extended = true
+  or
+  // _Float128
+  kind = 49 and base = 2 and domain = TRealDomain() and realKind = 49 and extended = false
+  or
+  // _Float128x
+  kind = 50 and base = 2 and domain = TRealDomain() and realKind = 50 and extended = true
+}
+
+/**
+ * The C/C++ floating point types. See 4.5.  This includes `float`, `double` and `long double`, the
+ * fixed-size floating-point types like `_Float32`, the extended-precision floating-point types like
+ * `_Float64x`, and the decimal floating-point types like `_Decimal32`. It also includes the complex
+ * and imaginary versions of all of these types.
  */
 class FloatingPointType extends ArithmeticType {
+  final int base;
+  final TypeDomain domain;
+  final int realKind;
+  final boolean extended;
+
   FloatingPointType() {
     exists(int kind |
       builtintypes(underlyingElement(this), _, kind, _, _, _) and
-      (
-        kind >= 24 and kind <= 32
-        or
-        kind >= 38 and kind <= 42
-        or
-        kind >= 45 and kind <= 50
-      )
+      floatingPointTypeMapping(kind, base, domain, realKind, extended)
     )
   }
+
+  /** Gets the numeric base of this type's representation: 2 (binary) or 10 (decimal). */
+  final int getBase() { result = base }
+
+  /**
+   * Gets the type domain of this type. Can be `RealDomain`, `ComplexDomain`, or `ImaginaryDomain`.
+   */
+  final TypeDomain getDomain() { result = domain }
+
+  /**
+   * Gets the corresponding real type of this type. For example, the corresponding real type of
+   * `_Complex double` is `double`.
+   */
+  final RealNumberType getRealType() {
+    builtintypes(unresolveElement(result), _, realKind, _, _, _)
+  }
+
+  /** Holds if this type is an extended precision floating-point type, such as `_Float32x`. */
+  final predicate isExtendedPrecision() { extended = true }
+}
+
+/**
+ * A floating-point type representing a real number.
+ */
+class RealNumberType extends FloatingPointType {
+  RealNumberType() { domain instanceof RealDomain }
+}
+
+/**
+ * A floating-point type representing a complex number.
+ */
+class ComplexNumberType extends FloatingPointType {
+  ComplexNumberType() { domain instanceof ComplexDomain }
+}
+
+/**
+ * A floating-point type representing an imaginary number.
+ */
+class ImaginaryNumberType extends FloatingPointType {
+  ImaginaryNumberType() { domain instanceof ImaginaryDomain }
+}
+
+/**
+ * A floating-point type whose representation is base 2.
+ */
+class BinaryFloatingPointType extends FloatingPointType {
+  BinaryFloatingPointType() { base = 2 }
+}
+
+/**
+ * A floating-point type whose representation is base 10.
+ */
+class DecimalFloatingPointType extends FloatingPointType {
+  DecimalFloatingPointType() { base = 10 }
 }
 
 /**
@@ -727,10 +894,10 @@ class FloatingPointType extends ArithmeticType {
  * float f;
  * ```
  */
-class FloatType extends FloatingPointType {
+class FloatType extends RealNumberType, BinaryFloatingPointType {
   FloatType() { builtintypes(underlyingElement(this), _, 24, _, _, _) }
 
-  override string getCanonicalQLClass() { result = "FloatType" }
+  override string getAPrimaryQlClass() { result = "FloatType" }
 }
 
 /**
@@ -739,10 +906,10 @@ class FloatType extends FloatingPointType {
  * double d;
  * ```
  */
-class DoubleType extends FloatingPointType {
+class DoubleType extends RealNumberType, BinaryFloatingPointType {
   DoubleType() { builtintypes(underlyingElement(this), _, 25, _, _, _) }
 
-  override string getCanonicalQLClass() { result = "DoubleType" }
+  override string getAPrimaryQlClass() { result = "DoubleType" }
 }
 
 /**
@@ -751,10 +918,10 @@ class DoubleType extends FloatingPointType {
  * long double ld;
  * ```
  */
-class LongDoubleType extends FloatingPointType {
+class LongDoubleType extends RealNumberType, BinaryFloatingPointType {
   LongDoubleType() { builtintypes(underlyingElement(this), _, 26, _, _, _) }
 
-  override string getCanonicalQLClass() { result = "LongDoubleType" }
+  override string getAPrimaryQlClass() { result = "LongDoubleType" }
 }
 
 /**
@@ -763,10 +930,10 @@ class LongDoubleType extends FloatingPointType {
  * __float128 f128;
  * ```
  */
-class Float128Type extends FloatingPointType {
+class Float128Type extends RealNumberType, BinaryFloatingPointType {
   Float128Type() { builtintypes(underlyingElement(this), _, 38, _, _, _) }
 
-  override string getCanonicalQLClass() { result = "Float128Type" }
+  override string getAPrimaryQlClass() { result = "Float128Type" }
 }
 
 /**
@@ -775,10 +942,10 @@ class Float128Type extends FloatingPointType {
  * _Decimal32 d32;
  * ```
  */
-class Decimal32Type extends FloatingPointType {
+class Decimal32Type extends RealNumberType, DecimalFloatingPointType {
   Decimal32Type() { builtintypes(underlyingElement(this), _, 40, _, _, _) }
 
-  override string getCanonicalQLClass() { result = "Decimal32Type" }
+  override string getAPrimaryQlClass() { result = "Decimal32Type" }
 }
 
 /**
@@ -787,10 +954,10 @@ class Decimal32Type extends FloatingPointType {
  * _Decimal64 d64;
  * ```
  */
-class Decimal64Type extends FloatingPointType {
+class Decimal64Type extends RealNumberType, DecimalFloatingPointType {
   Decimal64Type() { builtintypes(underlyingElement(this), _, 41, _, _, _) }
 
-  override string getCanonicalQLClass() { result = "Decimal64Type" }
+  override string getAPrimaryQlClass() { result = "Decimal64Type" }
 }
 
 /**
@@ -799,10 +966,10 @@ class Decimal64Type extends FloatingPointType {
  * _Decimal128 d128;
  * ```
  */
-class Decimal128Type extends FloatingPointType {
+class Decimal128Type extends RealNumberType, DecimalFloatingPointType {
   Decimal128Type() { builtintypes(underlyingElement(this), _, 42, _, _, _) }
 
-  override string getCanonicalQLClass() { result = "Decimal128Type" }
+  override string getAPrimaryQlClass() { result = "Decimal128Type" }
 }
 
 /**
@@ -814,7 +981,7 @@ class Decimal128Type extends FloatingPointType {
 class VoidType extends BuiltInType {
   VoidType() { builtintypes(underlyingElement(this), _, 3, _, _, _) }
 
-  override string getCanonicalQLClass() { result = "VoidType" }
+  override string getAPrimaryQlClass() { result = "VoidType" }
 }
 
 /**
@@ -830,7 +997,19 @@ class VoidType extends BuiltInType {
 class WideCharType extends IntegralType {
   WideCharType() { builtintypes(underlyingElement(this), _, 33, _, _, _) }
 
-  override string getCanonicalQLClass() { result = "WideCharType" }
+  override string getAPrimaryQlClass() { result = "WideCharType" }
+}
+
+/**
+ * The C/C++ `char8_t` type.  This is available starting with C++20.
+ * ```
+ * char8_t c8;
+ * ```
+ */
+class Char8Type extends IntegralType {
+  Char8Type() { builtintypes(underlyingElement(this), _, 51, _, _, _) }
+
+  override string getAPrimaryQlClass() { result = "Char8Type" }
 }
 
 /**
@@ -842,7 +1021,7 @@ class WideCharType extends IntegralType {
 class Char16Type extends IntegralType {
   Char16Type() { builtintypes(underlyingElement(this), _, 43, _, _, _) }
 
-  override string getCanonicalQLClass() { result = "Char16Type" }
+  override string getAPrimaryQlClass() { result = "Char16Type" }
 }
 
 /**
@@ -854,7 +1033,7 @@ class Char16Type extends IntegralType {
 class Char32Type extends IntegralType {
   Char32Type() { builtintypes(underlyingElement(this), _, 44, _, _, _) }
 
-  override string getCanonicalQLClass() { result = "Char32Type" }
+  override string getAPrimaryQlClass() { result = "Char32Type" }
 }
 
 /**
@@ -869,7 +1048,7 @@ class Char32Type extends IntegralType {
 class NullPointerType extends BuiltInType {
   NullPointerType() { builtintypes(underlyingElement(this), _, 34, _, _, _) }
 
-  override string getCanonicalQLClass() { result = "NullPointerType" }
+  override string getAPrimaryQlClass() { result = "NullPointerType" }
 }
 
 /**
@@ -904,22 +1083,46 @@ class DerivedType extends Type, @derivedtype {
 
   override Type stripType() { result = getBaseType().stripType() }
 
-  predicate isAutoReleasing() {
+  /**
+   * Holds if this type has the `__autoreleasing` specifier or if it points to
+   * a type with the `__autoreleasing` specifier.
+   *
+   * DEPRECATED: use `hasSpecifier` directly instead.
+   */
+  deprecated predicate isAutoReleasing() {
     this.hasSpecifier("__autoreleasing") or
     this.(PointerType).getBaseType().hasSpecifier("__autoreleasing")
   }
 
-  predicate isStrong() {
+  /**
+   * Holds if this type has the `__strong` specifier or if it points to
+   * a type with the `__strong` specifier.
+   *
+   * DEPRECATED: use `hasSpecifier` directly instead.
+   */
+  deprecated predicate isStrong() {
     this.hasSpecifier("__strong") or
     this.(PointerType).getBaseType().hasSpecifier("__strong")
   }
 
-  predicate isUnsafeRetained() {
+  /**
+   * Holds if this type has the `__unsafe_unretained` specifier or if it points
+   * to a type with the `__unsafe_unretained` specifier.
+   *
+   * DEPRECATED: use `hasSpecifier` directly instead.
+   */
+  deprecated predicate isUnsafeRetained() {
     this.hasSpecifier("__unsafe_unretained") or
     this.(PointerType).getBaseType().hasSpecifier("__unsafe_unretained")
   }
 
-  predicate isWeak() {
+  /**
+   * Holds if this type has the `__weak` specifier or if it points to
+   * a type with the `__weak` specifier.
+   *
+   * DEPRECATED: use `hasSpecifier` directly instead.
+   */
+  deprecated predicate isWeak() {
     this.hasSpecifier("__weak") or
     this.(PointerType).getBaseType().hasSpecifier("__weak")
   }
@@ -933,7 +1136,7 @@ class DerivedType extends Type, @derivedtype {
  * ```
  */
 class Decltype extends Type, @decltype {
-  override string getCanonicalQLClass() { result = "Decltype" }
+  override string getAPrimaryQlClass() { result = "Decltype" }
 
   /**
    * The expression whose type is being obtained by this decltype.
@@ -1006,7 +1209,7 @@ class Decltype extends Type, @decltype {
 class PointerType extends DerivedType {
   PointerType() { derivedtypes(underlyingElement(this), _, 1, _) }
 
-  override string getCanonicalQLClass() { result = "PointerType" }
+  override string getAPrimaryQlClass() { result = "PointerType" }
 
   override int getPointerIndirectionLevel() {
     result = 1 + this.getBaseType().getPointerIndirectionLevel()
@@ -1032,7 +1235,7 @@ class ReferenceType extends DerivedType {
     derivedtypes(underlyingElement(this), _, 2, _) or derivedtypes(underlyingElement(this), _, 8, _)
   }
 
-  override string getCanonicalQLClass() { result = "ReferenceType" }
+  override string getAPrimaryQlClass() { result = "ReferenceType" }
 
   override int getPointerIndirectionLevel() { result = getBaseType().getPointerIndirectionLevel() }
 
@@ -1059,7 +1262,7 @@ class ReferenceType extends DerivedType {
 class LValueReferenceType extends ReferenceType {
   LValueReferenceType() { derivedtypes(underlyingElement(this), _, 2, _) }
 
-  override string getCanonicalQLClass() { result = "LValueReferenceType" }
+  override string getAPrimaryQlClass() { result = "LValueReferenceType" }
 }
 
 /**
@@ -1075,7 +1278,7 @@ class LValueReferenceType extends ReferenceType {
 class RValueReferenceType extends ReferenceType {
   RValueReferenceType() { derivedtypes(underlyingElement(this), _, 8, _) }
 
-  override string getCanonicalQLClass() { result = "RValueReferenceType" }
+  override string getAPrimaryQlClass() { result = "RValueReferenceType" }
 
   override string explain() { result = "rvalue " + super.explain() }
 }
@@ -1090,7 +1293,7 @@ class RValueReferenceType extends ReferenceType {
 class SpecifiedType extends DerivedType {
   SpecifiedType() { derivedtypes(underlyingElement(this), _, 3, _) }
 
-  override string getCanonicalQLClass() { result = "SpecifiedType" }
+  override string getAPrimaryQlClass() { result = "SpecifiedType" }
 
   override int getSize() { result = this.getBaseType().getSize() }
 
@@ -1138,8 +1341,12 @@ class SpecifiedType extends DerivedType {
 class ArrayType extends DerivedType {
   ArrayType() { derivedtypes(underlyingElement(this), _, 4, _) }
 
-  override string getCanonicalQLClass() { result = "ArrayType" }
+  override string getAPrimaryQlClass() { result = "ArrayType" }
 
+  /**
+   * Holds if this array is declared to be of a constant size. See
+   * `getArraySize` and `getByteSize` to get the size of the array.
+   */
   predicate hasArraySize() { arraysizes(underlyingElement(this), _, _, _) }
 
   /**
@@ -1166,8 +1373,8 @@ class ArrayType extends DerivedType {
   override string explain() {
     if exists(this.getArraySize())
     then
-      result = "array of " + this.getArraySize().toString() + " {" + this.getBaseType().explain() +
-          "}"
+      result =
+        "array of " + this.getArraySize().toString() + " {" + this.getBaseType().explain() + "}"
     else result = "array of {" + this.getBaseType().explain() + "}"
   }
 
@@ -1205,7 +1412,7 @@ class GNUVectorType extends DerivedType {
    */
   int getNumElements() { arraysizes(underlyingElement(this), result, _, _) }
 
-  override string getCanonicalQLClass() { result = "GNUVectorType" }
+  override string getAPrimaryQlClass() { result = "GNUVectorType" }
 
   /**
    * Gets the size, in bytes, of this vector type.
@@ -1236,7 +1443,7 @@ class GNUVectorType extends DerivedType {
 class FunctionPointerType extends FunctionPointerIshType {
   FunctionPointerType() { derivedtypes(underlyingElement(this), _, 6, _) }
 
-  override string getCanonicalQLClass() { result = "FunctionPointerType" }
+  override string getAPrimaryQlClass() { result = "FunctionPointerType" }
 
   override int getPointerIndirectionLevel() { result = 1 }
 
@@ -1254,7 +1461,7 @@ class FunctionPointerType extends FunctionPointerIshType {
 class FunctionReferenceType extends FunctionPointerIshType {
   FunctionReferenceType() { derivedtypes(underlyingElement(this), _, 7, _) }
 
-  override string getCanonicalQLClass() { result = "FunctionReferenceType" }
+  override string getAPrimaryQlClass() { result = "FunctionReferenceType" }
 
   override int getPointerIndirectionLevel() { result = getBaseType().getPointerIndirectionLevel() }
 
@@ -1343,7 +1550,7 @@ class PointerToMemberType extends Type, @ptrtomember {
   /** a printable representation of this named element */
   override string toString() { result = this.getName() }
 
-  override string getCanonicalQLClass() { result = "PointerToMemberType" }
+  override string getAPrimaryQlClass() { result = "PointerToMemberType" }
 
   /** the name of this type */
   override string getName() { result = "..:: *" }
@@ -1364,7 +1571,8 @@ class PointerToMemberType extends Type, @ptrtomember {
   }
 
   override string explain() {
-    result = "pointer to member of " + this.getClass().toString() + " with type {" +
+    result =
+      "pointer to member of " + this.getClass().toString() + " with type {" +
         this.getBaseType().explain() + "}"
   }
 
@@ -1387,20 +1595,30 @@ class RoutineType extends Type, @routinetype {
   /** a printable representation of this named element */
   override string toString() { result = this.getName() }
 
-  override string getCanonicalQLClass() { result = "RoutineType" }
+  override string getAPrimaryQlClass() { result = "RoutineType" }
 
   override string getName() { result = "..()(..)" }
 
+  /**
+   * Gets the type of the `n`th parameter to this routine.
+   */
   Type getParameterType(int n) {
     routinetypeargs(underlyingElement(this), n, unresolveElement(result))
   }
 
+  /**
+   * Gets the type of a parameter to this routine.
+   */
   Type getAParameterType() { routinetypeargs(underlyingElement(this), _, unresolveElement(result)) }
 
+  /**
+   * Gets the return type of this routine.
+   */
   Type getReturnType() { routinetypes(underlyingElement(this), unresolveElement(result)) }
 
   override string explain() {
-    result = "function returning {" + this.getReturnType().explain() + "} with arguments (" +
+    result =
+      "function returning {" + this.getReturnType().explain() + "} with arguments (" +
         this.explainParameters(0) + ")"
   }
 
@@ -1454,7 +1672,7 @@ class TemplateParameter extends UserType {
     usertypes(underlyingElement(this), _, 7) or usertypes(underlyingElement(this), _, 8)
   }
 
-  override string getCanonicalQLClass() { result = "TemplateParameter" }
+  override string getAPrimaryQlClass() { result = "TemplateParameter" }
 
   override predicate involvesTemplateParameter() { any() }
 }
@@ -1472,7 +1690,7 @@ class TemplateParameter extends UserType {
 class TemplateTemplateParameter extends TemplateParameter {
   TemplateTemplateParameter() { usertypes(underlyingElement(this), _, 8) }
 
-  override string getCanonicalQLClass() { result = "TemplateTemplateParameter" }
+  override string getAPrimaryQlClass() { result = "TemplateTemplateParameter" }
 }
 
 /**
@@ -1484,7 +1702,7 @@ class TemplateTemplateParameter extends TemplateParameter {
 class AutoType extends TemplateParameter {
   AutoType() { usertypes(underlyingElement(this), "auto", 7) }
 
-  override string getCanonicalQLClass() { result = "AutoType" }
+  override string getAPrimaryQlClass() { result = "AutoType" }
 
   override Location getLocation() {
     suppressUnusedThis(this) and
@@ -1520,7 +1738,7 @@ private predicate suppressUnusedThis(Type t) { any() }
 class TypeMention extends Locatable, @type_mention {
   override string toString() { result = "type mention" }
 
-  override string getCanonicalQLClass() { result = "TypeMention" }
+  override string getAPrimaryQlClass() { result = "TypeMention" }
 
   /**
    * Gets the type being referenced by this type mention.

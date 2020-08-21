@@ -1,15 +1,5 @@
 package com.semmle.js.extractor.test;
 
-import com.semmle.js.extractor.AutoBuild;
-import com.semmle.js.extractor.ExtractorState;
-import com.semmle.js.extractor.FileExtractor;
-import com.semmle.js.extractor.FileExtractor.FileType;
-import com.semmle.util.data.StringUtil;
-import com.semmle.util.exception.UserError;
-import com.semmle.util.files.FileUtil;
-import com.semmle.util.files.FileUtil8;
-import com.semmle.util.process.Env;
-import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitResult;
@@ -25,11 +15,25 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Assume;
 import org.junit.Before;
 import org.junit.Test;
+
+import com.semmle.js.extractor.AutoBuild;
+import com.semmle.js.extractor.DependencyInstallationResult;
+import com.semmle.js.extractor.ExtractorState;
+import com.semmle.js.extractor.FileExtractor;
+import com.semmle.js.extractor.FileExtractor.FileType;
+import com.semmle.js.extractor.VirtualSourceRoot;
+import com.semmle.util.data.StringUtil;
+import com.semmle.util.exception.UserError;
+import com.semmle.util.files.FileUtil;
+import com.semmle.util.files.FileUtil8;
+import com.semmle.util.process.Env;
 
 public class AutoBuildTests {
   private Path SEMMLE_DIST, LGTM_SRC;
@@ -107,11 +111,12 @@ public class AutoBuildTests {
       Set<String> actual = new LinkedHashSet<>();
       new AutoBuild() {
         @Override
-        protected void extract(FileExtractor extractor, Path file, ExtractorState state) {
+        protected CompletableFuture<?> extract(FileExtractor extractor, Path file, boolean concurrent) {
           String extracted = file.toString();
           if (extractor.getConfig().hasFileType())
             extracted += ":" + extractor.getFileType(file.toFile());
           actual.add(extracted);
+          return CompletableFuture.completedFuture(null);
         }
 
         @Override
@@ -119,18 +124,23 @@ public class AutoBuildTests {
 
         @Override
         public void extractTypeScriptFiles(
-            java.util.List<File> files,
+            java.util.List<Path> files,
             java.util.Set<Path> extractedFiles,
-            FileExtractor extractor,
-            ExtractorState extractorState) {
-          for (File f : files) {
+            FileExtractors extractors) {
+          for (Path f : files) {
             actual.add(f.toString());
           }
         }
 
         @Override
-        protected void installDependencies(Set<Path> filesToExtract) {
-          // never install dependencies during testing
+        protected DependencyInstallationResult preparePackagesAndDependencies(Set<Path> filesToExtract) {
+          // currently disabled in tests
+          return DependencyInstallationResult.empty;
+        }
+
+        @Override
+        protected VirtualSourceRoot makeVirtualSourceRoot() {
+          return VirtualSourceRoot.none; // not used in these tests
         }
 
         @Override

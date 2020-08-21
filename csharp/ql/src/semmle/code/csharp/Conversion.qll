@@ -205,7 +205,8 @@ private module Identity {
    * parameter at index `i` in unbound generic type `ugt`.
    */
   private int getTypeArgumentCount(UnboundGenericType ugt, int i) {
-    result = strictcount(Type arg |
+    result =
+      strictcount(Type arg |
         exists(IdentityConvertibleGenericType ct | ct.getUnboundGeneric() = ugt |
           arg = ct.getTypeArgument(i)
         )
@@ -361,7 +362,7 @@ private module Identity {
     IdentityConvertibleGenericType fromType, IdentityConvertibleGenericType toType
   ) {
     // Semantically equivalent with
-    // ```
+    // ```ql
     // ugt = fromType.getUnboundGeneric()
     // and
     // forex(int i |
@@ -772,7 +773,7 @@ predicate convConversionOperator(Type fromType, Type toType) {
 /** 13.1.3.2: Variance conversion. */
 private predicate convVariance(GenericType fromType, GenericType toType) {
   // Semantically equivalent with
-  // ```
+  // ```ql
   // ugt = fromType.getUnboundGeneric()
   // and
   // forex(int i |
@@ -813,7 +814,8 @@ private module Variance {
    * parameter at index `i` in unbound generic type `ugt`.
    */
   private int getTypeArgumentCount(UnboundGenericType ugt, int i) {
-    result = strictcount(Type arg |
+    result =
+      strictcount(Type arg |
         exists(VarianceConvertibleGenericType gt | gt.getUnboundGeneric() = ugt |
           arg = gt.getTypeArgument(i)
         )

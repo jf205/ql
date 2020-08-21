@@ -44,9 +44,7 @@ predicate isSimpleCharacterClass(RegExpCharacterClass t) {
 }
 
 /** Holds if `t` is an alternation of simple terms. */
-predicate isSimpleAlt(RegExpAlt t) {
-  forall(RegExpTerm ch | ch = t.getAChild() | isSimple(ch))
-}
+predicate isSimpleAlt(RegExpAlt t) { forall(RegExpTerm ch | ch = t.getAChild() | isSimple(ch)) }
 
 /**
  * Holds if `mce` is of the form `x.replace(re, new)`, where `re` is a global
@@ -69,7 +67,7 @@ predicate isBackslashEscape(StringReplaceCall mce, DataFlow::RegExpLiteralNode r
  */
 predicate allBackslashesEscaped(DataFlow::Node nd) {
   // `JSON.stringify` escapes backslashes
-  nd = DataFlow::globalVarRef("JSON").getAMemberCall("stringify")
+  nd instanceof JsonStringifyCall
   or
   // check whether `nd` itself escapes backslashes
   exists(DataFlow::RegExpLiteralNode rel | isBackslashEscape(nd, rel) |

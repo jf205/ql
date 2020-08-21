@@ -10,22 +10,25 @@ import semmle.python.Files
  *
  * For more information, see [Locations](https://help.semmle.com/QL/learn-ql/ql/locations.html).
  */
-external predicate defectResults(int id, string queryPath, string filepath, int startline,
-                                 int startcol, int endline, int endcol, string message);
+external predicate defectResults(
+  int id, string queryPath, string filepath, int startline, int startcol, int endline, int endcol,
+  string message
+);
 
 /**
  * A defect query result stored in a dashboard database.
  */
 class DefectResult extends int {
-
   DefectResult() { defectResults(this, _, _, _, _, _, _, _) }
 
   /** Gets the path of the query that reported the result. */
   string getQueryPath() { defectResults(this, result, _, _, _, _, _, _) }
 
   /** Gets the file in which this query result was reported. */
-  File getFile() { 
-    exists(string path | defectResults(this, _, path, _, _, _, _, _) and result.getName() = path)
+  File getFile() {
+    exists(string path |
+      defectResults(this, _, path, _, _, _, _, _) and result.getAbsolutePath() = path
+    )
   }
 
   /** Gets the file path in which this query result was reported. */
@@ -46,22 +49,33 @@ class DefectResult extends int {
   /** Gets the message associated with this query result. */
   string getMessage() { defectResults(this, _, _, _, _, _, _, result) }
 
-  predicate hasLocationInfo(string path, int sl, int sc, int el, int ec) {
-    defectResults(this, _, path, sl, sc, el, ec, _)
+  /**
+   * Holds if this element is at the specified location.
+   * The location spans column `startcolumn` of line `startline` to
+   * column `endcolumn` of line `endline` in file `filepath`.
+   * For more information, see
+   * [Locations](https://help.semmle.com/QL/learn-ql/ql/locations.html).
+   */
+  predicate hasLocationInfo(
+    string filepath, int startline, int startcolumn, int endline, int endcolumn
+  ) {
+    defectResults(this, _, filepath, startline, startcolumn, endline, endcolumn, _)
   }
 
   /** Gets the URL corresponding to the location of this query result. */
   string getURL() {
-    result = "file://" + getFile().getName() + ":" + getStartLine() + ":" + getStartColumn() + ":" + getEndLine() + ":" + getEndColumn()
+    result =
+      "file://" + getFile().getAbsolutePath() + ":" + getStartLine() + ":" + getStartColumn() + ":" +
+        getEndLine() + ":" + getEndColumn()
   }
-
 }
 
 // crude containment by line number only
 predicate contains(Location l, DefectResult res) {
   exists(string path, int bl1, int el1, int bl2, int el2 |
-    l.hasLocationInfo(path, bl1, _, el1, _)
-    and res.hasLocationInfo(path, bl2, _, el2, _)
-    and bl1 <= bl2 and el1 >= el2
+    l.hasLocationInfo(path, bl1, _, el1, _) and
+    res.hasLocationInfo(path, bl2, _, el2, _) and
+    bl1 <= bl2 and
+    el1 >= el2
   )
 }

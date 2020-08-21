@@ -9,30 +9,7 @@ private import semmle.javascript.dependencies.Dependencies
 private import semmle.javascript.dependencies.FrameworkLibraries
 private import semmle.javascript.frameworks.Testing
 private import DataFlow
-
-/**
- * Gets the root folder of the snapshot.
- *
- * This is selected as the location for project-wide metrics.
- */
-Folder projectRoot() { result.getRelativePath() = "" }
-
-/** A file we ignore because it is a test file or compiled/generated/bundled code. */
-class IgnoredFile extends File {
-  IgnoredFile() {
-    any(Test t).getFile() = this
-    or
-    getRelativePath().regexpMatch("(?i).*/test(case)?s?/.*")
-    or
-    getBaseName().regexpMatch("(?i)(.*[._\\-]|^)(min|bundle|concat|spec|tests?)\\.[a-zA-Z]+")
-    or
-    exists(TopLevel tl | tl.getFile() = this |
-      tl.isExterns()
-      or
-      tl instanceof FrameworkLibraryInstance
-    )
-  }
-}
+import meta.MetaMetrics
 
 /** An call site that is relevant for analysis quality. */
 class RelevantInvoke extends InvokeNode {
@@ -86,9 +63,7 @@ SourceNode nodeLeadingToInvocation() {
  * Holds if there is a call edge `invoke -> f` between a relevant invocation
  * and a relevant function.
  */
-predicate relevantCall(RelevantInvoke invoke, RelevantFunction f) {
-  FlowSteps::calls(invoke, f)
-}
+predicate relevantCall(RelevantInvoke invoke, RelevantFunction f) { FlowSteps::calls(invoke, f) }
 
 /**
  * A call site that can be resolved to a function in the same project.
@@ -105,9 +80,7 @@ class ResolvableCall extends RelevantInvoke {
  * A call site that could not be resolved.
  */
 class UnresolvableCall extends RelevantInvoke {
-  UnresolvableCall() {
-    not this instanceof ResolvableCall
-  }
+  UnresolvableCall() { not this instanceof ResolvableCall }
 }
 
 /**

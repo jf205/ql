@@ -15,7 +15,7 @@ module CleartextLogging {
   abstract class Source extends DataFlow::Node {
     /** Gets a string that describes the type of this data flow source. */
     abstract string describe();
-    
+
     abstract DataFlow::FlowLabel getLabel();
   }
 
@@ -23,16 +23,14 @@ module CleartextLogging {
    * A data flow sink for clear-text logging of sensitive information.
    */
   abstract class Sink extends DataFlow::Node {
-    DataFlow::FlowLabel getLabel() {
-      result.isDataOrTaint()
-    }
+    DataFlow::FlowLabel getLabel() { result.isTaint() }
   }
 
   /**
    * A barrier for clear-text logging of sensitive information.
    */
   abstract class Barrier extends DataFlow::Node { }
-  
+
   /**
    * A call to `.replace()` that seems to mask sensitive information.
    */
@@ -43,8 +41,7 @@ module CleartextLogging {
         reg = this.getArgument(0).getALocalSource().asExpr() and
         reg.isGlobal() and
         any(RegExpDot term).getLiteral() = reg
-      )
-      and
+      ) and
       exists(this.getArgument(1).getStringValue())
     }
   }
@@ -129,10 +126,8 @@ module CleartextLogging {
     }
 
     override string describe() { result = "an access to " + name }
-    
-    override DataFlow::FlowLabel getLabel() {
-      result.isData()
-    }
+
+    override DataFlow::FlowLabel getLabel() { result.isTaint() }
   }
 
   /** An access to a variable or property that might contain a password. */
@@ -157,10 +152,8 @@ module CleartextLogging {
     }
 
     override string describe() { result = "an access to " + name }
-    
-    override DataFlow::FlowLabel getLabel() {
-      result.isData()
-    }
+
+    override DataFlow::FlowLabel getLabel() { result.isTaint() }
   }
 
   /** A call that might return a password. */
@@ -173,33 +166,59 @@ module CleartextLogging {
     }
 
     override string describe() { result = "a call to " + name }
-    
-    override DataFlow::FlowLabel getLabel() {
-      result.isData()
-    }
+
+    override DataFlow::FlowLabel getLabel() { result.isTaint() }
   }
 
   /** An access to the sensitive object `process.env`. */
   class ProcessEnvSource extends Source {
-    ProcessEnvSource() {
-      this = NodeJSLib::process().getAPropertyRead("env")
-    }
+    ProcessEnvSource() { this = NodeJSLib::process().getAPropertyRead("env") }
 
     override string describe() { result = "process environment" }
-    
-    override DataFlow::FlowLabel getLabel() {
-      result.isData() or 
-      result instanceof PartiallySensitiveMap
-    }
+
+    override DataFlow::FlowLabel getLabel() { result.isTaint() }
   }
-  
+
   /**
-   * A flow label describing a map that might contain sensitive information in some properties.
-   * Property reads on such maps where the property name is fixed is unlikely to leak sensitive information. 
+   * Holds if the edge `pred` -> `succ` should be sanitized for clear-text logging of sensitive information.
    */
-  class PartiallySensitiveMap extends DataFlow::FlowLabel {
-    PartiallySensitiveMap() {
-      this = "PartiallySensitiveMap"
-    }
+  predicate isSanitizerEdge(DataFlow::Node pred, DataFlow::Node succ) {
+    succ.(DataFlow::PropRead).getBase() = pred
+  }
+
+  /**
+   * Holds if the edge `src` -> `trg` is an additional taint-step for clear-text logging of sensitive information.
+   */
+  predicate isAdditionalTaintStep(DataFlow::Node src, DataFlow::Node trg) {
+    // A taint propagating data flow edge through objects: a tainted write taints the entire object.
+    exists(DataFlow::PropWrite write |
+      write.getRhs() = src and
+      trg.(DataFlow::SourceNode).flowsTo(write.getBase())
+    )
+    or
+    // A property-copy step,
+    // dst[x] = src[x]
+    // dst[x] = JSON.stringify(src[x])
+    exists(DataFlow::PropWrite write, DataFlow::PropRead read |
+      read = write.getRhs()
+      or
+      exists(JsonStringifyCall stringify |
+        stringify.getOutput() = write.getRhs() and
+        stringify.getInput() = read
+      )
+    |
+      not exists(write.getPropertyName()) and
+      not exists(read.getPropertyName()) and
+      src = read.getBase() and
+      trg = write.getBase().getALocalSource()
+    )
+    or
+    // Taint through the arguments object.
+    exists(DataFlow::CallNode call, Function f |
+      src = call.getAnArgument() and
+      f = call.getACallee() and
+      not call.isImprecise() and
+      trg.asExpr() = f.getArgumentsVariable().getAnAccess()
+    )
   }
 }

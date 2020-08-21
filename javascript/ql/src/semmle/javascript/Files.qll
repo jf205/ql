@@ -183,11 +183,8 @@ class Folder extends Container, @folder {
    * HTML files will not be found by this method.
    */
   File getJavaScriptFile(string stem) {
-    result = min(int p, string ext |
-        p = getFileExtensionPriority(ext)
-      |
-        getFile(stem, ext) order by p
-      )
+    result =
+      min(int p, string ext | p = getFileExtensionPriority(ext) | getFile(stem, ext) order by p)
   }
 
   /** Gets a subfolder contained in this folder. */
@@ -209,13 +206,13 @@ class File extends Container, @file {
   override string getAbsolutePath() { files(this, result, _, _, _) }
 
   /** Gets the number of lines in this file. */
-  int getNumberOfLines() { numlines(this, result, _, _) }
+  int getNumberOfLines() { result = sum(int loc | numlines(this, loc, _, _) | loc) }
 
   /** Gets the number of lines containing code in this file. */
-  int getNumberOfLinesOfCode() { numlines(this, _, result, _) }
+  int getNumberOfLinesOfCode() { result = sum(int loc | numlines(this, _, loc, _) | loc) }
 
   /** Gets the number of lines containing comments in this file. */
-  int getNumberOfLinesOfComments() { numlines(this, _, _, result) }
+  int getNumberOfLinesOfComments() { result = sum(int loc | numlines(this, _, _, loc) | loc) }
 
   /** Gets a toplevel piece of JavaScript code in this file. */
   TopLevel getATopLevel() { result.getFile() = this }

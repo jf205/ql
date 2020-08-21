@@ -2,7 +2,7 @@
 
 import csharp
 private import semmle.code.csharp.frameworks.System
-private import semmle.code.csharp.dataflow.DataFlow2
+private import semmle.code.csharp.dataflow.DataFlow3
 
 /** The `System.Xml` namespace. */
 class SystemXmlNamespace extends Namespace {
@@ -118,16 +118,16 @@ class SystemXmlXmlNamedNodeMapClass extends Class {
 /** An enum constant in `System.Xml.ValidationType`. */
 class SystemXmlValidationType extends EnumConstant {
   SystemXmlValidationType() {
-    this.getDeclaringEnum() = any(Enum e |
-        e = any(SystemXmlNamespace n).getAnEnum() and e.hasName("ValidationType")
-      )
+    this.getDeclaringEnum() =
+      any(Enum e | e = any(SystemXmlNamespace n).getAnEnum() and e.hasName("ValidationType"))
   }
 }
 
 /** An enum constant in `System.Xml.Schema.XmlSchemaValidationFlags`. */
 class SystemXmlSchemaXmlSchemaValidationFlags extends EnumConstant {
   SystemXmlSchemaXmlSchemaValidationFlags() {
-    this.getDeclaringEnum() = any(Enum e |
+    this.getDeclaringEnum() =
+      any(Enum e |
         e = any(SystemXmlSchemaNamespace s).getAnEnum() and e.hasName("XmlSchemaValidationFlags")
       )
   }
@@ -141,14 +141,14 @@ class XmlReaderSettingsCreation extends ObjectCreation {
 
   /** Gets a value set on the `ValidationType` property, if any. */
   SystemXmlValidationType getValidationType() {
-    result.getAnAccess() = this
-          .getPropertyValue(any(SystemXmlXmlReaderSettingsClass s).getValidationTypeProperty())
+    result.getAnAccess() =
+      this.getPropertyValue(any(SystemXmlXmlReaderSettingsClass s).getValidationTypeProperty())
   }
 
   /** Gets a flag set on the `ValidationFlags` property, if any. */
   SystemXmlSchemaXmlSchemaValidationFlags getAValidationFlag() {
-    result.getAnAccess() = this
-          .getPropertyValue(any(SystemXmlXmlReaderSettingsClass s).getValidationFlagsProperty())
+    result.getAnAccess() =
+      this.getPropertyValue(any(SystemXmlXmlReaderSettingsClass s).getValidationFlagsProperty())
   }
 
   /** Gets a value set for the given property in this local context. */
@@ -163,7 +163,7 @@ class XmlReaderSettingsCreation extends ObjectCreation {
   }
 }
 
-private class SettingsDataFlowConfig extends DataFlow2::Configuration {
+private class SettingsDataFlowConfig extends DataFlow3::Configuration {
   SettingsDataFlowConfig() { this = "SettingsDataFlowConfig" }
 
   override predicate isSource(DataFlow::Node source) {

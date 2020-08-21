@@ -20,7 +20,7 @@ class PrintfFormatAttribute extends FormatAttribute {
  * function by its use of the GNU `format` attribute.
  */
 class AttributeFormattingFunction extends FormattingFunction {
-  override string getCanonicalQLClass() { result = "AttributeFormattingFunction" }
+  override string getAPrimaryQlClass() { result = "AttributeFormattingFunction" }
 
   AttributeFormattingFunction() {
     exists(PrintfFormatAttribute printf_attrib |
@@ -49,12 +49,44 @@ predicate primitiveVariadicFormatter(TopLevelFunction f, int formatParamIndex) {
   )
 }
 
+/**
+ * A standard function such as `vsprintf` that has an output parameter
+ * and a variable argument list of type `va_arg`.
+ */
+private predicate primitiveVariadicFormatterOutput(TopLevelFunction f, int outputParamIndex) {
+  // note: this might look like the regular expression in `primitiveVariadicFormatter`, but
+  // there is one important difference: the [fs] part is not optional, as these classify
+  // the `printf` variants that write to a buffer.
+  // Conveniently, these buffer parameters are all at index 0.
+  f.getName().regexpMatch("_?_?va?[fs]n?w?printf(_s)?(_p)?(_l)?") and outputParamIndex = 0
+}
+
 private predicate callsVariadicFormatter(Function f, int formatParamIndex) {
   exists(FunctionCall fc, int i |
     variadicFormatter(fc.getTarget(), i) and
     fc.getEnclosingFunction() = f and
     fc.getArgument(i) = f.getParameter(formatParamIndex).getAnAccess()
   )
+}
+
+private predicate callsVariadicFormatterOutput(Function f, int outputParamIndex) {
+  exists(FunctionCall fc, int i |
+    fc.getEnclosingFunction() = f and
+    variadicFormatterOutput(fc.getTarget(), i) and
+    fc.getArgument(i) = f.getParameter(outputParamIndex).getAnAccess()
+  )
+}
+
+/**
+ * Holds if `f` is a function such as `vprintf` that takes variable argument list
+ * of type `va_arg` and writes formatted output to a buffer given as a parameter at
+ * index `outputParamIndex`, if any.
+ */
+private predicate variadicFormatterOutput(Function f, int outputParamIndex) {
+  primitiveVariadicFormatterOutput(f, outputParamIndex)
+  or
+  not f.isVarargs() and
+  callsVariadicFormatterOutput(f, outputParamIndex)
 }
 
 /**
@@ -73,11 +105,13 @@ predicate variadicFormatter(Function f, int formatParamIndex) {
  * string and a variable number of arguments.
  */
 class UserDefinedFormattingFunction extends FormattingFunction {
-  override string getCanonicalQLClass() { result = "UserDefinedFormattingFunction" }
+  override string getAPrimaryQlClass() { result = "UserDefinedFormattingFunction" }
 
   UserDefinedFormattingFunction() { isVarargs() and callsVariadicFormatter(this, _) }
 
   override int getFormatParameterIndex() { callsVariadicFormatter(this, result) }
+
+  override int getOutputParameterIndex() { callsVariadicFormatterOutput(this, result) }
 }
 
 /**
@@ -86,7 +120,7 @@ class UserDefinedFormattingFunction extends FormattingFunction {
 class FormattingFunctionCall extends Expr {
   FormattingFunctionCall() { this.(Call).getTarget() instanceof FormattingFunction }
 
-  override string getCanonicalQLClass() { result = "FormattingFunctionCall" }
+  override string getAPrimaryQlClass() { result = "FormattingFunctionCall" }
 
   /**
    * Gets the formatting function being called.
@@ -258,14 +292,7 @@ class FormatLiteral extends Literal {
    * Gets the position in the string at which the nth conversion specifier
    * starts.
    */
-  int getConvSpecOffset(int n) {
-    n = 0 and result = this.getFormat().indexOf("%", 0, 0)
-    or
-    n > 0 and
-    exists(int p |
-      n = p + 1 and result = this.getFormat().indexOf("%", 0, this.getConvSpecOffset(p) + 2)
-    )
-  }
+  int getConvSpecOffset(int n) { result = this.getFormat().indexOf("%", n, 0) }
 
   /*
    * Each of these predicates gets a regular expressions to match each individual
@@ -311,7 +338,8 @@ class FormatLiteral extends Literal {
     //                 6 - length
     //                 7 - conversion character
     // NB: this matches "%%" with conversion character "%"
-    result = "(?s)(\\%(" + this.getParameterFieldRegexp() + ")(" + this.getFlagRegexp() + ")(" +
+    result =
+      "(?s)(\\%(" + this.getParameterFieldRegexp() + ")(" + this.getFlagRegexp() + ")(" +
         this.getFieldWidthRegexp() + ")(" + this.getPrecRegexp() + ")(" + this.getLengthRegexp() +
         ")(" + this.getConvCharRegexp() + ")" + "|\\%\\%).*"
   }
@@ -844,11 +872,8 @@ class FormatLiteral extends Literal {
    */
   int getFormatArgumentIndexFor(int n, int mode) {
     hasFormatArgumentIndexFor(n, mode) and
-    (3 * n) + mode = rank[result + 1](int n2, int mode2 |
-        hasFormatArgumentIndexFor(n2, mode2)
-      |
-        (3 * n2) + mode2
-      )
+    (3 * n) + mode =
+      rank[result + 1](int n2, int mode2 | hasFormatArgumentIndexFor(n2, mode2) | (3 * n2) + mode2)
   }
 
   /**
@@ -960,7 +985,8 @@ class FormatLiteral extends Literal {
         ) and
         // e.g. -2^31 = "-2147483648"
         exists(int sizeBits |
-          sizeBits = min(int bits |
+          sizeBits =
+            min(int bits |
               bits = getIntegralDisplayType(n).getSize() * 8
               or
               exists(IntegralType t |
@@ -977,7 +1003,8 @@ class FormatLiteral extends Literal {
         this.getConversionChar(n).toLowerCase() = "u" and
         // e.g. 2^32 - 1 = "4294967295"
         exists(int sizeBits |
-          sizeBits = min(int bits |
+          sizeBits =
+            min(int bits |
               bits = getIntegralDisplayType(n).getSize() * 8
               or
               exists(IntegralType t |
@@ -994,7 +1021,8 @@ class FormatLiteral extends Literal {
         this.getConversionChar(n).toLowerCase() = "x" and
         // e.g. "12345678"
         exists(int sizeBytes, int baseLen |
-          sizeBytes = min(int bytes |
+          sizeBytes =
+            min(int bytes |
               bytes = getIntegralDisplayType(n).getSize()
               or
               exists(IntegralType t |
@@ -1021,7 +1049,8 @@ class FormatLiteral extends Literal {
         this.getConversionChar(n).toLowerCase() = "o" and
         // e.g. 2^32 - 1 = "37777777777"
         exists(int sizeBits, int baseLen |
-          sizeBits = min(int bits |
+          sizeBits =
+            min(int bits |
               bits = getIntegralDisplayType(n).getSize() * 8
               or
               exists(IntegralType t |
@@ -1037,7 +1066,8 @@ class FormatLiteral extends Literal {
         )
         or
         this.getConversionChar(n).toLowerCase() = "s" and
-        len = min(int v |
+        len =
+          min(int v |
             v = this.getPrecision(n) or
             v = this.getUse().getFormatArgument(n).(AnalysedString).getMaxLength() - 1 // (don't count null terminator)
           )
@@ -1070,7 +1100,8 @@ class FormatLiteral extends Literal {
     if n = 0
     then result = this.getFormat().substring(0, this.getConvSpecOffset(0))
     else
-      result = this
+      result =
+        this
             .getFormat()
             .substring(this.getConvSpecOffset(n - 1) + this.getConvSpec(n - 1).length(),
               this.getConvSpecOffset(n))
@@ -1086,7 +1117,8 @@ class FormatLiteral extends Literal {
       (
         if n > 0
         then
-          result = this
+          result =
+            this
                 .getFormat()
                 .substring(this.getConvSpecOffset(n - 1) + this.getConvSpec(n - 1).length(),
                   this.getFormat().length())
@@ -1099,7 +1131,8 @@ class FormatLiteral extends Literal {
     if n = this.getNumConvSpec()
     then result = this.getConstantSuffix().length() + 1
     else
-      result = this.getConstantPart(n).length() + this.getMaxConvertedLength(n) +
+      result =
+        this.getConstantPart(n).length() + this.getMaxConvertedLength(n) +
           this.getMaxConvertedLengthAfter(n + 1)
   }
 
@@ -1107,7 +1140,8 @@ class FormatLiteral extends Literal {
     if n = this.getNumConvSpec()
     then result = this.getConstantSuffix().length() + 1
     else
-      result = this.getConstantPart(n).length() + this.getMaxConvertedLengthLimited(n) +
+      result =
+        this.getConstantPart(n).length() + this.getMaxConvertedLengthLimited(n) +
           this.getMaxConvertedLengthAfterLimited(n + 1)
   }
 

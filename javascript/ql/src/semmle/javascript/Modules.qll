@@ -140,12 +140,23 @@ abstract class Import extends ASTNode {
    * Gets a module in a `node_modules/@types/` folder that matches the imported module name.
    */
   private Module resolveFromTypeRoot() {
-    result.getFile() = min(TypeRootFolder typeRoot |
+    result.getFile() =
+      min(TypeRootFolder typeRoot |
         |
         typeRoot.getModuleFile(getImportedPath().getValue())
         order by
           typeRoot.getSearchPriority(getFile().getParentContainer())
       )
+  }
+
+  /**
+   * Gets the imported module, as determined by the TypeScript compiler, if any.
+   */
+  private Module resolveFromTypeScriptSymbol() {
+    exists(CanonicalName symbol |
+      ast_node_symbol(this, symbol) and
+      ast_node_symbol(result, symbol)
+    )
   }
 
   /**
@@ -162,7 +173,9 @@ abstract class Import extends ASTNode {
     else (
       result = resolveAsProvidedModule() or
       result = resolveImportedPath() or
-      result = resolveFromTypeRoot()
+      result = resolveFromTypeRoot() or
+      result = resolveFromTypeScriptSymbol() or
+      result = resolveNeighbourPackage(this.getImportedPath().getValue())
     )
   }
 
@@ -173,12 +186,39 @@ abstract class Import extends ASTNode {
 }
 
 /**
+ * DEPRECATED. Use `PathExpr` instead.
+ *
  * A path expression that appears in a module and is resolved relative to it.
  */
-abstract class PathExprInModule extends PathExpr {
-  PathExprInModule() { exists(getEnclosingModule()) }
-
-  override Folder getSearchRoot(int priority) {
-    getEnclosingModule().searchRoot(this, result, priority)
+abstract deprecated class PathExprInModule extends PathExpr {
+  PathExprInModule() {
+    this.(Expr).getTopLevel() instanceof Module
+    or
+    this.(Comment).getTopLevel() instanceof Module
   }
+}
+
+/**
+ * Gets a module imported from another package in the same repository.
+ *
+ * No support for importing from folders inside the other package.
+ */
+private Module resolveNeighbourPackage(PathString importPath) {
+  exists(PackageJSON json | importPath = json.getPackageName() and result = json.getMainModule())
+  or
+  exists(string package |
+    result.getFile().getParentContainer() = getPackageFolder(package) and
+    importPath = package + "/" + [result.getFile().getBaseName(), result.getFile().getStem()]
+  )
+}
+
+/**
+ * Gets the folder for a package that has name `package` according to a package.json file in the resulting folder.
+ */
+pragma[noinline]
+private Folder getPackageFolder(string package) {
+  exists(PackageJSON json |
+    json.getPackageName() = package and
+    result = json.getFile().getParentContainer()
+  )
 }

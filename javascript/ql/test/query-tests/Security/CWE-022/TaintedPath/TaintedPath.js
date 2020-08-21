@@ -14,40 +14,33 @@ var server = http.createServer(function(req, res) {
   // BAD: This could still read any file on the file system
   res.write(fs.readFileSync("/home/user/" + path));
 
-  // BAD: Insufficient sanitisation
   if (path.startsWith("/home/user/"))
-      res.write(fs.readFileSync(path));
+      res.write(fs.readFileSync(path)); // BAD: Insufficient sanitisation
 
-  // BAD: Insufficient sanitisation
   if (path.indexOf("secret") == -1)
-      res.write(fs.readFileSync(path));
+      res.write(fs.readFileSync(path)); // BAD: Insufficient sanitisation
 
-  // BAD: Insufficient sanitisation
   if (fs.existsSync(path))
-      res.write(fs.readFileSync(path));
+      res.write(fs.readFileSync(path)); // BAD: Insufficient sanitisation
 
-  // GOOD: Path is compared to white-list
   if (path === 'foo.txt')
-    res.write(fs.readFileSync(path));
+    res.write(fs.readFileSync(path)); // GOOD: Path is compared to white-list
 
-  // GOOD: Path is compared to white-list
   if (path === 'foo.txt' || path === 'bar.txt')
-    res.write(fs.readFileSync(path));
+    res.write(fs.readFileSync(path)); // GOOD: Path is compared to white-list
 
-  // BAD: Path is incompletely compared to white-list
   if (path === 'foo.txt' || path === 'bar.txt' || someOpaqueCondition())
-    res.write(fs.readFileSync(path));
+    res.write(fs.readFileSync(path)); // BAD: Path is incompletely compared to white-list
 
-  // GOOD: Path is sanitized
   path = sanitize(path);
-  res.write(fs.readFileSync(path));
+  res.write(fs.readFileSync(path)); // GOOD: Path is sanitized
 
   path = url.parse(req.url, true).query.path;
-  // BAD: taint is preserved
+  // GOOD: basename is safe
   res.write(fs.readFileSync(pathModule.basename(path)));
   // BAD: taint is preserved
   res.write(fs.readFileSync(pathModule.dirname(path)));
-  // BAD: taint is preserved
+  // GOOD: extname is safe
   res.write(fs.readFileSync(pathModule.extname(path)));
   // BAD: taint is preserved
   res.write(fs.readFileSync(pathModule.join(path)));
@@ -113,4 +106,91 @@ var server = http.createServer(function(req, res) {
 	                }
 	               );
 
+});
+
+var server = http.createServer(function(req, res) {
+  let path = url.parse(req.url, true).query.path;
+  
+  if (path) { // sanitization
+    path = path.replace(/[\]\[*,;'"`<>\\?\/]/g, ''); // remove all invalid characters from states plus slashes
+    path = path.replace(/\.\./g, ''); // remove all ".."
+  }
+  
+  res.write(fs.readFileSync(path));  // OK. Is sanitized above.
+});
+
+var server = http.createServer(function(req, res) {
+  let path = url.parse(req.url, true).query.path;
+  
+  if (!path) {
+    
+  } else { // sanitization
+	  path = path.replace(/[\]\[*,;'"`<>\\?\/]/g, ''); // remove all invalid characters from states plus slashes
+    path = path.replace(/\.\./g, ''); // remove all ".."
+  }
+  
+  res.write(fs.readFileSync(path));  // OK. Is sanitized above.
+});
+
+var server = http.createServer(function(req, res) {
+	let path = url.parse(req.url, true).query.path;
+
+	require('send')(req, path); // NOT OK
+});
+
+var server = http.createServer(function(req, res) {
+  let path = url.parse(req.url, true).query.path;
+
+  fs.readFileSync(path); // NOT OK
+  
+  var split = path.split("/");
+  
+  fs.readFileSync(split.join("/")); // NOT OK
+
+  fs.readFileSync(prefix + split[split.length - 1]) // OK
+
+  fs.readFileSync(split[x]) // NOT OK
+  fs.readFileSync(prefix + split[x]) // NOT OK 
+
+  var concatted = prefix.concat(split);
+  fs.readFileSync(concatted.join("/")); // NOT OK
+
+  var concatted2 = split.concat(prefix);
+  fs.readFileSync(concatted2.join("/")); // NOT OK
+
+  fs.readFileSync(split.pop()); // NOT OK 
+
+});
+
+var server = http.createServer(function(req, res) {
+  let path = url.parse(req.url, true).query.path;
+  
+  // Removal of forward-slash or dots.
+  res.write(fs.readFileSync(path.replace(/[\]\[*,;'"`<>\\?\/]/g, ''))); // OK.
+  res.write(fs.readFileSync(path.replace(/[abcd]/g, ''))); // NOT OK
+  res.write(fs.readFileSync(path.replace(/[./]/g, ''))); // OK
+  res.write(fs.readFileSync(path.replace(/[foobar/foobar]/g, ''))); // OK
+  res.write(fs.readFileSync(path.replace(/\//g, ''))); // OK
+  res.write(fs.readFileSync(path.replace(/\.|\//g, ''))); // OK
+
+  res.write(fs.readFileSync(path.replace(/[.]/g, ''))); // NOT OK (can be absolute)
+  res.write(fs.readFileSync(path.replace(/[..]/g, ''))); // NOT OK (can be absolute)
+  res.write(fs.readFileSync(path.replace(/\./g, ''))); // NOT OK (can be absolute)
+  res.write(fs.readFileSync(path.replace(/\.\.|BLA/g, ''))); // NOT OK (can be absolute)
+
+  if (!pathModule.isAbsolute(path)) {
+    res.write(fs.readFileSync(path.replace(/[.]/g, ''))); // OK
+  	res.write(fs.readFileSync(path.replace(/[..]/g, ''))); // OK
+    res.write(fs.readFileSync(path.replace(/\./g, ''))); // OK
+  	res.write(fs.readFileSync(path.replace(/\.\.|BLA/g, ''))); // OK
+  }
+
+  // removing of "../" from prefix.
+  res.write(fs.readFileSync("prefix" + pathModule.normalize(path).replace(/^(\.\.[\/\\])+/, ''))); // OK
+  res.write(fs.readFileSync("prefix" + pathModule.normalize(path).replace(/(\.\.[\/\\])+/, ''))); // OK
+  res.write(fs.readFileSync("prefix" + pathModule.normalize(path).replace(/(\.\.\/)+/, ''))); // OK
+  res.write(fs.readFileSync("prefix" + pathModule.normalize(path).replace(/(\.\.\/)*/, ''))); // OK
+
+  res.write(fs.readFileSync("prefix" + path.replace(/^(\.\.[\/\\])+/, ''))); // NOT OK - not normalized
+  res.write(fs.readFileSync(pathModule.normalize(path).replace(/^(\.\.[\/\\])+/, ''))); // NOT OK (can be absolute)
 });

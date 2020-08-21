@@ -171,7 +171,7 @@ module Ssa {
        * callable. A pseudo read is inserted to make assignments to `out`/`ref` variables
        * live, for example line 1 in
        *
-       * ```
+       * ```csharp
        * void M(out int i) {
        *   i = 0;
        * }
@@ -189,7 +189,7 @@ module Ssa {
        * A pseudo read is inserted to make assignments to the `ref` variable live, for example
        * line 2 in
        *
-       * ```
+       * ```csharp
        * void M() {
        *   ref int i = ref GetRef();
        *   i = 0;
@@ -295,7 +295,8 @@ module Ssa {
      * that is either a read or a certain write.
      */
     private int firstReadOrCertainWrite(BasicBlock bb, SourceVariable v) {
-      result = min(int r, RefKind k |
+      result =
+        min(int r, RefKind k |
           r = refRank(bb, _, v, k) and
           k != Write(false)
         |
@@ -387,7 +388,8 @@ module Ssa {
       or
       // Local variable declaration without initializer
       not exists(result.getTargetAccess()) and
-      this = any(LocalScopeSourceVariable v |
+      this =
+        any(LocalScopeSourceVariable v |
           result.getTarget() = v.getAssignable() and
           result.getEnclosingCallable() = v.getEnclosingCallable()
         )
@@ -450,7 +452,8 @@ module Ssa {
        * code location. This is used as the representative location.
        */
       private FieldOrPropAccess getFirstAccess() {
-        result = min(this.getAnAccess() as a
+        result =
+          min(this.getAnAccess() as a
             order by
               a.getLocation().getStartLine(), a.getLocation().getStartColumn()
           )
@@ -609,7 +612,7 @@ module Ssa {
      * For example, if `bb` is a basic block with a phi node for `v` (considered
      * to be at index -1), reads `v` at node 2, and defines it at node 5, we have:
      *
-     * ```
+     * ```ql
      * ssaRefRank(bb, -1, v, SsaDef()) = 1    // phi node
      * ssaRefRank(bb,  2, v, Read())   = 2    // read at node 2
      * ssaRefRank(bb,  5, v, SsaDef()) = 3    // definition at node 5
@@ -890,7 +893,7 @@ module Ssa {
    * of the field or property. For example, there is an implicit update of
    * `this.Field` on line 7 in
    *
-   * ```
+   * ```csharp
    * int Field;
    *
    * void SetField(int i) { Field = i; }
@@ -1064,12 +1067,14 @@ module Ssa {
       private predicate delegateCreation(
         Expr e, Callable c, SystemLinqExpressions::DelegateExtType dt
       ) {
-        e = any(AnonymousFunctionExpr afe |
+        e =
+          any(AnonymousFunctionExpr afe |
             dt = afe.getType() and
             c = afe
           )
         or
-        e = any(CallableAccess ca |
+        e =
+          any(CallableAccess ca |
             c = ca.getTarget().getSourceDeclaration() and
             dt = ca.getType()
           )
@@ -1354,7 +1359,7 @@ module Ssa {
    * site that conceivably could reach an update of the captured variable.
    * For example, there is an implicit update of `v` on line 4 in
    *
-   * ```
+   * ```csharp
    * int M() {
    *   int i = 0;
    *   Action a = () => { i = 1; };
@@ -1554,7 +1559,7 @@ module Ssa {
    *
    * Example:
    *
-   * ```
+   * ```csharp
    * void M() {
    *   int i = 0;
    *   void M2() {
@@ -1731,7 +1736,7 @@ module Ssa {
      *
      * Example:
      *
-     * ```
+     * ```csharp
      * class C {
      *   void M1() {
      *     int i = 0;
@@ -1770,7 +1775,7 @@ module Ssa {
      *
      * Example:
      *
-     * ```
+     * ```csharp
      * class C {
      *   void M1() {
      *     int i = 0;
@@ -1840,7 +1845,7 @@ module Ssa {
         (
           exists(ReadKind rk | liveAfterWrite(bb, i, v, rk) |
             // A `ref` assignment such as
-            // ```
+            // ```csharp
             // ref int i = ref GetRef();
             // ```
             // is dead when there are no reads of or writes to `i`.
@@ -2000,7 +2005,7 @@ module Ssa {
      * can be reached from this SSA definition without passing through any
      * other SSA definitions. Example:
      *
-     * ```
+     * ```csharp
      * int Field;
      *
      * void SetField(int i) {
@@ -2029,7 +2034,7 @@ module Ssa {
      * control flow node `cfn` that can be reached from this SSA definition
      * without passing through any other SSA definitions. Example:
      *
-     * ```
+     * ```csharp
      * int Field;
      *
      * void SetField(int i) {
@@ -2061,7 +2066,7 @@ module Ssa {
      * can be reached from this SSA definition without passing through any
      * other SSA definition or read. Example:
      *
-     * ```
+     * ```csharp
      * int Field;
      *
      * void SetField(int i) {
@@ -2097,7 +2102,7 @@ module Ssa {
      * control flow node `cfn` that can be reached from this SSA definition
      * without passing through any other SSA definition or read. Example:
      *
-     * ```
+     * ```csharp
      * int Field;
      *
      * void SetField(int i) {
@@ -2137,7 +2142,7 @@ module Ssa {
      * another SSA definition for the source variable, without passing through
      * any other read. Example:
      *
-     * ```
+     * ```csharp
      * int Field;
      *
      * void SetField(int i) {
@@ -2167,7 +2172,7 @@ module Ssa {
      * enclosing callable, or another SSA definition for the source variable,
      * without passing through any other read. Example:
      *
-     * ```
+     * ```csharp
      * int Field;
      *
      * void SetField(int i) {
@@ -2198,7 +2203,7 @@ module Ssa {
      * Gets a definition that ultimately defines this SSA definition and is
      * not itself a pseudo node. Example:
      *
-     * ```
+     * ```csharp
      * int Field;
      *
      * void SetField(int i) {
@@ -2317,7 +2322,7 @@ module Ssa {
      *
      * Example:
      *
-     * ```
+     * ```csharp
      * class C {
      *   void M1() {
      *     int i = 0;
@@ -2344,7 +2349,7 @@ module Ssa {
      *
      * Example:
      *
-     * ```
+     * ```csharp
      * class C {
      *   void M1() {
      *     int i = 0;
@@ -2505,7 +2510,7 @@ module Ssa {
     /**
      * Gets an input of this phi node. Example:
      *
-     * ```
+     * ```csharp
      * int Field;
      *
      * void SetField(int i) {
@@ -2560,7 +2565,8 @@ module Ssa {
    */
   class UncertainDefinition extends Definition {
     UncertainDefinition() {
-      this = any(ExplicitDefinition def |
+      this =
+        any(ExplicitDefinition def |
           forex(AssignableDefinition ad | ad = def.getADefinition() | not ad.isCertain())
         )
       or
